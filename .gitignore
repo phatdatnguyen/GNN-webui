@@ -1,0 +1,7 @@
+gnn-webui-venv/
+Datasets/
+Checkpoints/
+__pycache__/
+.vs/
+*.csv
+*.pdb

@@ -1,0 +1,3 @@
+.\gnn-webui-venv\Scripts\activate.bat
+set PYTHONUTF8=1
+python webui.py
