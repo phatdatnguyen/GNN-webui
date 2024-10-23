@@ -1,6 +1,6 @@
 import torch
 from torch.nn import Linear, ModuleList, BatchNorm1d
-from torch_geometric.nn import GCNConv, SAGEConv, SGConv, ClusterGCNConv, GraphConv, LEConv, EGConv, MFConv, TAGConv, ARMAConv, FiLMConv, PDNConv, GENConv, ResGatedGraphConv, GATConv, GATv2Conv, SuperGATConv, TransformerConv, GeneralConv, global_mean_pool
+from torch_geometric.nn import GCNConv, SAGEConv, CuGraphSAGEConv, SGConv, ClusterGCNConv, GraphConv, ChebConv, LEConv, EGConv, MFConv, FeaStConv, TAGConv, ARMAConv, FiLMConv, PDNConv, GENConv, ResGatedGraphConv, GATConv, GATv2Conv, SuperGATConv, TransformerConv, GeneralConv, global_mean_pool
 
 class GCNModel(torch.nn.Module):
     def __init__(self, n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs,
@@ -69,6 +69,62 @@ class GraphSAGEModel(torch.nn.Module):
         self.gcn.append(SAGEConv(n_gcn_inputs, n_gcn_hiddens))
         for i in range(1, n_gcn_layers):
             self.gcn.append(SAGEConv(n_gcn_hiddens, n_gcn_hiddens))
+        
+        self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        
+        # MLP layers
+        self.mlp = ModuleList()
+        if n_mlp_layers > 0:
+            self.mlp.append(Linear(n_mlp_inputs, n_mlp_hiddens))
+            for i in range(1, n_mlp_layers):
+                self.mlp.append(Linear(n_mlp_hiddens, n_mlp_hiddens))
+            self.mlp.append(Linear(n_mlp_hiddens, n_mlp_outputs))
+        else:
+            n_mlp_outputs = 0
+        
+        # Predictor layers
+        self.predictor = ModuleList()
+        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+        for i in range(1, n_predictor_layers):
+            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        
+        self.out = Linear(n_predictor_hiddens, 1)
+        
+    def forward(self, x, edge_index, batch_index, mol_features):
+        for i, layer in enumerate(self.gcn):
+            if i == 0:
+                h1 = layer(x, edge_index)
+            elif i < len(self.gcn) - 1:
+                h1 = layer(h1, edge_index)
+            else:
+                h1 = torch.relu(layer(h1))  
+        h1 = global_mean_pool(h1, batch_index)
+        
+        if len(self.mlp) > 0:
+            h2 = mol_features
+            for i, linear in enumerate(self.mlp):
+                h2 = torch.relu(linear(h2))
+                
+            h = torch.cat((h1, h2), dim=1)
+        else:
+            h = h1
+        
+        for i, linear in enumerate(self.predictor):
+            h = torch.relu(linear(h))
+        
+        return self.out(h)
+    
+class CuGraphSAGEModel(torch.nn.Module):
+    def __init__(self, n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs,
+                 n_mlp_inputs, n_mlp_hiddens, n_mlp_layers, n_mlp_outputs,
+                 n_predictor_hiddens, n_predictor_layers):
+        super(CuGraphSAGEModel, self).__init__()
+        
+        # GCN layers
+        self.gcn = torch.nn.ModuleList()
+        self.gcn.append(CuGraphSAGEConv(n_gcn_inputs, n_gcn_hiddens))
+        for i in range(1, n_gcn_layers):
+            self.gcn.append(CuGraphSAGEConv(n_gcn_hiddens, n_gcn_hiddens))
         
         self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
         
@@ -281,6 +337,62 @@ class GraphConvModel(torch.nn.Module):
             h = torch.relu(linear(h))
         
         return self.out(h)
+    
+class ChebConvModel(torch.nn.Module):
+    def __init__(self, n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs,
+                 n_mlp_inputs, n_mlp_hiddens, n_mlp_layers, n_mlp_outputs,
+                 n_predictor_hiddens, n_predictor_layers):
+        super(ChebConvModel, self).__init__()
+        
+        # GCN layers
+        self.gcn = torch.nn.ModuleList()
+        self.gcn.append(ChebConv(n_gcn_inputs, n_gcn_hiddens, 2))
+        for i in range(1, n_gcn_layers):
+            self.gcn.append(ChebConv(n_gcn_hiddens, n_gcn_hiddens, 2))
+        
+        self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        
+        # MLP layers
+        self.mlp = ModuleList()
+        if n_mlp_layers > 0:
+            self.mlp.append(Linear(n_mlp_inputs, n_mlp_hiddens))
+            for i in range(1, n_mlp_layers):
+                self.mlp.append(Linear(n_mlp_hiddens, n_mlp_hiddens))
+            self.mlp.append(Linear(n_mlp_hiddens, n_mlp_outputs))
+        else:
+            n_mlp_outputs = 0
+        
+        # Predictor layers
+        self.predictor = ModuleList()
+        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+        for i in range(1, n_predictor_layers):
+            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        
+        self.out = Linear(n_predictor_hiddens, 1)
+        
+    def forward(self, x, edge_index, batch_index, mol_features):
+        for i, layer in enumerate(self.gcn):
+            if i == 0:
+                h1 = layer(x, edge_index)
+            elif i < len(self.gcn) - 1:
+                h1 = layer(h1, edge_index)
+            else:
+                h1 = torch.relu(layer(h1))  
+        h1 = global_mean_pool(h1, batch_index)
+        
+        if len(self.mlp) > 0:
+            h2 = mol_features
+            for i, linear in enumerate(self.mlp):
+                h2 = torch.relu(linear(h2))
+                
+            h = torch.cat((h1, h2), dim=1)
+        else:
+            h = h1
+        
+        for i, linear in enumerate(self.predictor):
+            h = torch.relu(linear(h))
+        
+        return self.out(h)
 
 class LEConvModel(torch.nn.Module):
     def __init__(self, n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs,
@@ -405,6 +517,62 @@ class MFConvModel(torch.nn.Module):
         self.gcn.append(MFConv(n_gcn_inputs, n_gcn_hiddens))
         for i in range(1, n_gcn_layers):
             self.gcn.append(MFConv(n_gcn_hiddens, n_gcn_hiddens))
+        
+        self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        
+        # MLP layers
+        self.mlp = ModuleList()
+        if n_mlp_layers > 0:
+            self.mlp.append(Linear(n_mlp_inputs, n_mlp_hiddens))
+            for i in range(1, n_mlp_layers):
+                self.mlp.append(Linear(n_mlp_hiddens, n_mlp_hiddens))
+            self.mlp.append(Linear(n_mlp_hiddens, n_mlp_outputs))
+        else:
+            n_mlp_outputs = 0
+        
+        # Predictor layers
+        self.predictor = ModuleList()
+        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+        for i in range(1, n_predictor_layers):
+            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        
+        self.out = Linear(n_predictor_hiddens, 1)
+        
+    def forward(self, x, edge_index, batch_index, mol_features):
+        for i, layer in enumerate(self.gcn):
+            if i == 0:
+                h1 = layer(x, edge_index)
+            elif i < len(self.gcn) - 1:
+                h1 = layer(h1, edge_index)
+            else:
+                h1 = torch.relu(layer(h1))  
+        h1 = global_mean_pool(h1, batch_index)
+        
+        if len(self.mlp) > 0:
+            h2 = mol_features
+            for i, linear in enumerate(self.mlp):
+                h2 = torch.relu(linear(h2))
+                
+            h = torch.cat((h1, h2), dim=1)
+        else:
+            h = h1
+        
+        for i, linear in enumerate(self.predictor):
+            h = torch.relu(linear(h))
+        
+        return self.out(h)
+
+class FeaStConvModel(torch.nn.Module):
+    def __init__(self, n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs,
+                 n_mlp_inputs, n_mlp_hiddens, n_mlp_layers, n_mlp_outputs,
+                 n_predictor_hiddens, n_predictor_layers):
+        super(FeaStConvModel, self).__init__()
+        
+        # GCN layers
+        self.gcn = torch.nn.ModuleList()
+        self.gcn.append(FeaStConv(n_gcn_inputs, n_gcn_hiddens))
+        for i in range(1, n_gcn_layers):
+            self.gcn.append(FeaStConv(n_gcn_hiddens, n_gcn_hiddens))
         
         self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
         

@@ -6,12 +6,12 @@ import gradio as gr
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import summary
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, auc, roc_curve
 from matplotlib import pyplot as plt
 from datasets import *
 from models import *
 
-def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, target_column_textbox: gr.Textbox, gcn_featurizer_dropdown: gr.Dropdown, mol_featurizer_dropdown: gr.Dropdown, test_size_slider: gr.Slider, val_size_slider: gr.Slider, batch_size_dropdown: gr.Dropdown) :
+def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, target_column_textbox: gr.Textbox, gcn_featurizer_dropdown: gr.Dropdown, mol_featurizer_dropdown: gr.Dropdown, test_size_slider: gr.Slider, val_size_slider: gr.Slider, batch_size_dropdown: gr.Dropdown, random_seed_slider: gr.Slider):
     # Load dataset
     dataset_file_path = dataset_file
     dataset_name = dataset_name_textbox
@@ -31,6 +31,9 @@ def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, tar
         val_size = int(len(dataset) * val_size_slider)
         train_size = len(dataset) - test_size - val_size
 
+        torch.manual_seed(random_seed_slider)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(random_seed_slider)
         train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size])
 
         # DataLoaders
@@ -42,19 +45,23 @@ def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, tar
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size_dropdown)
     except Exception as exc:
         gr.Warning("Error!\n" + exc.args)
-        return None
+        return None, None
     
-    return f"Data processed: {len(dataset)} molecules."
+    create_model_button = gr.Button(value="Create model", interactive=True)
+    return f"Data processed: {len(dataset)} molecules.",create_model_button
 
-def on_create_model(gcn_model_name: gr.Dropdown, gcn_n_hiddens: gr.Dropdown, gcn_n_layers: gr.Slider, gcn_n_heads: gr.Slider, gcn_n_outputs: gr.Dropdown,
-                    mlp_n_hiddens: gr.Dropdown, mlp_n_layers: gr.Slider, mlp_n_outputs: gr.Dropdown,
-                    predictor_n_hiddens: gr.Dropdown, predictor_n_layers: gr.Slider):
+def on_create_model(gcn_model_name: gr.Dropdown, gcn_n_hiddens: gr.Dropdown, gcn_n_layers: gr.Slider, gcn_n_heads: gr.Slider, gcn_n_outputs: gr.Slider,
+                    mlp_n_hiddens: gr.Dropdown, mlp_n_layers: gr.Slider, mlp_n_outputs: gr.Slider,
+                    predictor_n_hiddens: gr.Dropdown, predictor_n_layers: gr.Slider, random_seed_slider: gr.Slider):
     
     gcn_n_inputs = dataset.num_node_features
     edge_dim = dataset.num_edge_features
     mlp_n_inputs = dataset.num_mol_features
     global device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    torch.manual_seed(random_seed_slider)
+    if device == 'cuda':
+        torch.cuda.manual_seed(random_seed_slider)
 
     global model
     if gcn_model_name == "GCN":
@@ -63,6 +70,10 @@ def on_create_model(gcn_model_name: gr.Dropdown, gcn_n_hiddens: gr.Dropdown, gcn
                          predictor_n_hiddens, predictor_n_layers).to(device)
     elif gcn_model_name == "GraphSAGE":
         model = GraphSAGEModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                         predictor_n_hiddens, predictor_n_layers).to(device)
+    elif gcn_model_name == "CuGraphSAGE":
+        model = CuGraphSAGEModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
                          mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                          predictor_n_hiddens, predictor_n_layers).to(device)
     elif gcn_model_name == "SGConv":
@@ -77,6 +88,10 @@ def on_create_model(gcn_model_name: gr.Dropdown, gcn_n_hiddens: gr.Dropdown, gcn
         model = GraphConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
                          mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                          predictor_n_hiddens, predictor_n_layers).to(device)
+    elif gcn_model_name == "ChebConv":
+        model = ChebConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                         predictor_n_hiddens, predictor_n_layers).to(device)
     elif gcn_model_name == "LEConv":
         model = LEConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
                          mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
@@ -87,6 +102,10 @@ def on_create_model(gcn_model_name: gr.Dropdown, gcn_n_hiddens: gr.Dropdown, gcn
                          predictor_n_hiddens, predictor_n_layers).to(device)
     elif gcn_model_name == "MFConv":
         model = MFConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                         predictor_n_hiddens, predictor_n_layers).to(device)
+    elif gcn_model_name == "FeaStConv":
+        model = FeaStConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
                          mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                          predictor_n_hiddens, predictor_n_layers).to(device)
     elif gcn_model_name == "TAGConv":
@@ -153,11 +172,18 @@ def on_create_model(gcn_model_name: gr.Dropdown, gcn_n_hiddens: gr.Dropdown, gcn
     mol_features = graph_data.mol_features.numpy()
     mol_features_scaled = mol_features_scaler.transform(mol_features)
     mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
-    if gcn_model_name in ["GCN", "GraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "LEConv", "EGConv", "MFConv", "TAGConv", "ARMAConv", "FiLMConv"]:
-        return summary(model, x, edge_index, batch_index, mol_features_scaled)
+    
+    save_checkpoint_button = gr.Button(value="Save checkpoint", interactive=True)
+    load_checkpoint_button = gr.Button(value="Load checkpoint", interactive=True)
+    create_optimizer_button = gr.Button(value="Create optimizer", interactive=True)
+    evaluate_button = gr.Button(value="Evaluate", interactive=True)
+    predict_button = gr.Button(value="Predict", interactive=True)
+    
+    if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+        return summary(model, x, edge_index, batch_index, mol_features_scaled), save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, predict_button
     else:
         edge_attr = graph_data.edge_attr.float().to(device)
-        return summary(model, x, edge_index, edge_attr, batch_index, mol_features_scaled)
+        return summary(model, x, edge_index, edge_attr, batch_index, mol_features_scaled), save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, predict_button
 
 trained_epochs = 0
 def on_save_checkpoint(model_name_textbox: gr.Textbox):
@@ -202,7 +228,10 @@ def on_create_optimizer(optimizer_dropdown: gr.Dropdown, learning_rate_slider: g
     train_losses = []
     val_losses = []
     trained_epochs = 0
-    return "Optimizer created."
+    
+    train_button = gr.Button(value="Train", interactive=True)
+
+    return "Optimizer created.", train_button
 
 # Define the train function
 def train(dataloader, gcn_model_name):
@@ -216,7 +245,7 @@ def train(dataloader, gcn_model_name):
         mol_features_scaled = mol_features_scaler.transform(mol_features)
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         y = batch.y.float().to(device)
-        if gcn_model_name in ["GCN", "GraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "LEConv", "EGConv", "MFConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+        if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
             output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
         else:
             edge_attr = batch.edge_attr.float().to(device)
@@ -243,7 +272,7 @@ def validation(dataloader, gcn_model_name):
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         y = batch.y.float().to(device)
         with torch.no_grad():
-            if gcn_model_name in ["GCN", "GraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "LEConv", "EGConv", "MFConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+            if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
                 output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
             else:
                 edge_attr = batch.edge_attr.float().to(device)
@@ -277,7 +306,9 @@ def on_train(epochs_slider: gr.Slider, gcn_model_name: gr.Dropdown, progress=gr.
         plt.grid(True)
         plt.close()
     
-    return figure
+    export_losses_button = gr.Button(value="Export", interactive=True)
+
+    return figure, export_losses_button
 
 def on_export_losses():
     df = pd.DataFrame()
@@ -302,7 +333,7 @@ def test(dataloader, gcn_model_name):
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         y = batch.y.float().to(device)
         with torch.no_grad():
-            if gcn_model_name in ["GCN", "GraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "LEConv", "EGConv", "MFConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+            if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
                 output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
             else:
                 edge_attr = batch.edge_attr.float().to(device)
@@ -325,7 +356,7 @@ def on_evaluate(gcn_model_name: gr.Dropdown):
     # Evaluate the model using different metrics
     cm = confusion_matrix(y_test, y_pred)
     display = ConfusionMatrixDisplay(confusion_matrix=cm)
-    figure, ax = plt.subplots(figsize=(6, 6))
+    cm_figure, ax = plt.subplots(figsize=(6, 6))
     display.plot(cmap=plt.cm.Blues, ax=ax, xticks_rotation='vertical')
     ax.set_title('Confusion Matrix')
 
@@ -333,6 +364,10 @@ def on_evaluate(gcn_model_name: gr.Dropdown):
     precision = precision_score(y_test, y_pred)
     recall = recall_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred)
+    TN = cm[0, 0]  # True Negative
+    FP = cm[0, 1]  # False Positive
+    specificity = TN / (TN + FP)
+    roc_auc = roc_auc_score(y_test, y_pred)
 
     html = """
     <div>
@@ -357,23 +392,48 @@ def on_evaluate(gcn_model_name: gr.Dropdown):
                     <td>{:.4f}</td>
                 </tr>
                 <tr>
+                    <td>Specificity</td>
+                    <td>{:.4f}</td>
+                </tr>
+                <tr>
                     <td>F1 score</td>
+                    <td>{:.4f}</td>
+                </tr>
+                <tr>
+                    <td>ROC-AUC score</td>
                     <td>{:.4f}</td>
                 </tr>
             </tbody>
         </table>
     </div>
-    """.format(accuracy, precision, recall, f1)
+    """.format(accuracy, precision, recall, specificity, f1, roc_auc)
 
-    return [figure, html]
+    # Generate ROC curve values
+    fpr, tpr, _ = roc_curve(y_test, y_pred)
+    roc_auc = auc(fpr, tpr)
 
-def on_export_scatter_plot():
+    # Plotting the ROC curve
+    roc_auc_figure = plt.figure(figsize=(6, 6))
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % roc_auc)
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.0])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic')
+    plt.legend(loc="lower right")
+
+    export_evaluation_button = gr.Button(value="Export", interactive=True)
+
+    return [html, cm_figure, roc_auc_figure, export_evaluation_button]
+
+def on_export_evaluation():
     df = pd.DataFrame()
     df['y_test'] = y_test.tolist()
     df['y_pred'] = y_pred.tolist()
-    file_path = f'.\\{dataset.dataset_name}_{trained_epochs}_scatter_plot.csv'
+    file_path = f'.\\{dataset.dataset_name}_{trained_epochs}_eval.csv'
     df.to_csv(file_path)
-    return f'Scatter plot exported to {file_path}.'
+    return f'Evaluation exported to {file_path}.'
 
 def on_process_prediction_data(prediction_dataset_file: gr.File, prediction_dataset_name_textbox: gr.Textbox, gcn_featurizer_dropdown: gr.Dropdown, mol_featurizer_dropdown: gr.Dropdown, batch_size_dropdown: gr.Dropdown):
     # Load dataset
@@ -406,7 +466,7 @@ def predict(dataloader, gcn_model_name):
         mol_features_scaled = mol_features_scaler.transform(mol_features)
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         with torch.no_grad():
-            if gcn_model_name in ["GCN", "GraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "LEConv", "EGConv", "MFConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+            if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv",  "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
                 output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
             else:
                 edge_attr = batch.edge_attr.float().to(device)
@@ -425,7 +485,9 @@ def on_predict(gcn_model_name: gr.Dropdown):
     prediction_df['smiles'] = smiles_list
     prediction_df[dataset.target_column] = y_pred.tolist()
     
-    return prediction_df
+    export_prediction_button = gr.Button(value="Export", interactive=True)
+
+    return prediction_df, export_prediction_button
 
 def on_export_prediction():
     file_path = f'.\\{prediction_dataset.dataset_name}_prediction.csv'
@@ -437,7 +499,7 @@ def gnn_binary_classification_tab_content():
         with gr.Accordion("Dataset"):
             with gr.Row(equal_height=True):
                 with gr.Column(scale=1):
-                    dataset_file = gr.File(file_types=['csv'], type='filepath', label="Dataset file")
+                    dataset_file = gr.File(file_types=['.csv'], type='filepath', label="Dataset file")
                     dataset_name_textbox = gr.Textbox(label="Dataset name", placeholder="dataset", value="dataset")
                     target_column_textbox = gr.Textbox(label="Target column")
                 with gr.Column(scale=1):
@@ -447,6 +509,7 @@ def gnn_binary_classification_tab_content():
                     test_size_slider = gr.Slider(minimum=0, maximum=0.4, value=0.2, step=0.01, label="Test size")
                     val_size_slider = gr.Slider(minimum=0, maximum=0.4, value=0.2, step=0.01, label="Validation size")
                     batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64])
+                    random_seed_slider = gr.Slider(minimum=0, maximum=1000, value=0, step=1, label="Random seed")
                     process_data_button = gr.Button(value="Process data")
                     process_data_markdown = gr.Markdown()
         with gr.Accordion("GNN model"):
@@ -454,28 +517,28 @@ def gnn_binary_classification_tab_content():
                 with gr.Column(scale=1):
                     with gr.Group():
                         gr.Markdown(value="Graph convolutional layers")
-                        gcn_model_name = gr.Dropdown(label="GNN model", value="GCN", choices=["GCN", "GraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "LEConv", "EGConv", "MFConv", "TAGConv", "ARMAConv", "FiLMConv", "PDNConv", "GENConv", "ResGatedGraphConv", "GAT", "GATv2", "SuperGAT", "TransformerConv", "GeneralConv"])
+                        gcn_model_name = gr.Dropdown(label="Graph convolutional layer", value="GCN", choices=["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "PDNConv", "GENConv", "ResGatedGraphConv", "GAT", "GATv2", "SuperGAT", "TransformerConv", "GeneralConv"])
                         gcn_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
                         gcn_n_layers = gr.Slider(label="n_layers", minimum=1, maximum=6, value=3, step=1)
                         gcn_n_heads = gr.Slider(label="n_heads", minimum=1, maximum=8, value=3, step=1)
-                        gcn_n_outputs = gr.Dropdown(label="n_outputs", value=8, choices=[1, 2, 4, 8, 16, 32, 64, 128])
+                        gcn_n_outputs = gr.Slider(label="n_outputs", minimum=1, maximum=512, value=50, step=1)
                 with gr.Column(scale=1):
                     with gr.Group():
                         gr.Markdown(value="Molecular feature layers")
                         mlp_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
                         mlp_n_layers = gr.Slider(label="n_layers", minimum=0, maximum=6, value=3, step=1)
-                        mlp_n_outputs = gr.Dropdown(label="n_outputs", value=8, choices=[1, 2, 4, 8, 16, 32, 64, 128])
+                        mlp_n_outputs = gr.Slider(label="n_outputs", minimum=1, maximum=512, value=50, step=1)
                     with gr.Group():
                         gr.Markdown(value="Predictor layers")
                         predictor_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
                         predictor_n_layers = gr.Slider(label="n_layers", minimum=1, maximum=6, value=3, step=1)
                 with gr.Column(scale=1):
-                    create_model_button = gr.Button(value="Create model")
+                    create_model_button = gr.Button(value="Create model", interactive=False)
                     model_name_textbox = gr.Textbox(label="Model name", placeholder="model", value="model")
-                    save_checkpoint_button = gr.Button(value="Save checkpoint")
+                    save_checkpoint_button = gr.Button(value="Save checkpoint", interactive=False)
                     save_checkpoint_markdown = gr.Markdown()
                     checkpoint_file = gr.File(file_types=['ckpt'], type='filepath', label="Checkpoint file")
-                    load_checkpoint_button = gr.Button(value="Load checkpoint")
+                    load_checkpoint_button = gr.Button(value="Load checkpoint", interactive=False)
                     load_checkpoint_markdown = gr.Markdown()
             with gr.Row(equal_height=True):
                 model_summary_textarea = gr.TextArea(label="Model summary", elem_classes="monospaced")
@@ -487,7 +550,7 @@ def gnn_binary_classification_tab_content():
                         optimizer_dropdown = gr.Dropdown(label="Optimizer", value="Adam", choices=["Adam", "AdamW", "SGD"]) 
                         learning_rate_slider = gr.Slider(label="Learning rate", minimum=0.00001, maximum=0.1, value=0.001, step=0.00001) 
                         learning_rate_decay_slider = gr.Slider(label="Learning rate decay", minimum=0.5, maximum=1, value=0.99, step=0.001)
-                    create_optimizer_button = gr.Button(value="Create optimizer")
+                    create_optimizer_button = gr.Button(value="Create optimizer", interactive=False)
                     create_optimizer_markdown = gr.Markdown()
                 with gr.Column(scale=3):
                     gr.Markdown(value="Training")  
@@ -495,21 +558,24 @@ def gnn_binary_classification_tab_content():
                         with gr.Column(scale=1):
                             epochs_slider = gr.Slider(label="Epochs", minimum=1, maximum=1000, value=100, step=1)
                         with gr.Column(scale=1):
-                            train_button = gr.Button(value="Train")
+                            train_button = gr.Button(value="Train", interactive=False)
                     with gr.Row(): 
                         with gr.Column(scale=3):
                             training_plot = gr.Plot()
                         with gr.Column(scale=1):
-                            export_losses_button = gr.Button(value="Export")
+                            export_losses_button = gr.Button(value="Export", interactive=False)
                             export_losses_markdown = gr.Markdown()
         with gr.Accordion("Model evaluation"):
             with gr.Row(equal_height=True):
                 with gr.Column(scale=1):
-                    evaluate_button = gr.Button(value="Evaluate")  
+                    evaluate_button = gr.Button(value="Evaluate", interactive=False)
+                    evaluation_metrics_html = gr.HTML() 
+                    export_evaluation_button = gr.Button(value="Export", interactive=False)
+                    export_evaluation_markdown = gr.Markdown()
                 with gr.Column(scale=1):
                     confusion_matrix_plot = gr.Plot()
                 with gr.Column(scale=1):
-                    evaluation_metrics_html = gr.HTML() 
+                    roc_auc_curve_plot = gr.Plot()
         with gr.Accordion("Make prediction"):
             with gr.Row(equal_height=True):
                 with gr.Column(scale=1):
@@ -520,25 +586,28 @@ def gnn_binary_classification_tab_content():
                 with gr.Column(scale=2):
                     with gr.Row(equal_height=True): 
                         with gr.Column(scale=1):
-                            predict_button = gr.Button(value="Predict")
+                            predict_button = gr.Button(value="Predict", interactive=False)
                         with gr.Column(scale=1):
-                            export_prediction_button = gr.Button(value="Export")
+                            export_prediction_button = gr.Button(value="Export", interactive=False)
                             export_prediction_markdown = gr.Markdown()
                     with gr.Row(): 
-                        prediction_datatable = gr.DataFrame(label="Prediction", height=400, wrap=False, interactive=False)
+                        prediction_datatable = gr.DataFrame(label="Prediction", wrap=False, interactive=False)
 
-    process_data_button.click(on_process_data, [dataset_file, dataset_name_textbox, target_column_textbox, gcn_featurizer_dropdown, mol_featurizer_dropdown, test_size_slider, val_size_slider, batch_size_dropdown], process_data_markdown)
+    process_data_button.click(on_process_data, [dataset_file, dataset_name_textbox, target_column_textbox, gcn_featurizer_dropdown, mol_featurizer_dropdown, test_size_slider, val_size_slider, batch_size_dropdown, random_seed_slider],
+                              [process_data_markdown, create_model_button])
     create_model_button.click(on_create_model, [gcn_model_name, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs,
                                                 mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                                                predictor_n_hiddens, predictor_n_layers], model_summary_textarea)
+                                                predictor_n_hiddens, predictor_n_layers, random_seed_slider],
+                                                [model_summary_textarea, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, predict_button])
     save_checkpoint_button.click(on_save_checkpoint, model_name_textbox, save_checkpoint_markdown)
     load_checkpoint_button.click(on_load_checkpoint, checkpoint_file, load_checkpoint_markdown)
-    create_optimizer_button.click(on_create_optimizer, [optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], create_optimizer_markdown)
-    train_button.click(on_train, [epochs_slider, gcn_model_name], training_plot)
+    create_optimizer_button.click(on_create_optimizer, [optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [create_optimizer_markdown, train_button])
+    train_button.click(on_train, [epochs_slider, gcn_model_name], [training_plot, export_losses_button])
     export_losses_button.click(on_export_losses, [], export_losses_markdown)
-    evaluate_button.click(on_evaluate, gcn_model_name, [confusion_matrix_plot, evaluation_metrics_html])
+    evaluate_button.click(on_evaluate, gcn_model_name, [evaluation_metrics_html, confusion_matrix_plot, roc_auc_curve_plot, export_evaluation_button])
+    export_evaluation_button.click(on_export_evaluation, [], export_evaluation_markdown)
     process_prediction_data_button.click(on_process_prediction_data, [prediction_dataset_file, prediction_dataset_name_textbox, gcn_featurizer_dropdown, mol_featurizer_dropdown, batch_size_dropdown], process_prediction_data_markdown)
-    predict_button.click(on_predict, gcn_model_name, prediction_datatable)
+    predict_button.click(on_predict, gcn_model_name, [prediction_datatable, export_prediction_button])
     export_prediction_button.click(on_export_prediction, [], export_prediction_markdown)
     
     return gnn_binary_classification_tab

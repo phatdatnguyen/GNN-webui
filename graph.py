@@ -21,9 +21,10 @@ def on_create_molecule(molecule_editor: molecule2d):
 
         Chem.MolToPDBFile(mol, file_path)
     except:
-        return None
+        return None, None
     
-    return file_path
+    create_graph_button = gr.Button(value="Create graph", interactive=True)
+    return file_path, create_graph_button
 
 def on_create_graph(smiles: gr.Textbox, featurizer_name: gr.Dropdown):
     # Extract the SMILES string from the event
@@ -174,21 +175,21 @@ def graph_tab_content():
                 with gr.Column(scale=3):
                     featurizer_dropdown = gr.Dropdown(label="Featurizer", value="MolGraphConvFeaturizer", choices=["MolGraphConvFeaturizer", "PagtnMolGraphFeaturizer", "DMPNNFeaturizer"])
                 with gr.Column(scale=2):
-                    create_graph_button = gr.Button(value="Create graph")
+                    create_graph_button = gr.Button(value="Create graph", interactive=False)
             with gr.Row(equal_height=True):
                 with gr.Column(scale=3):
                     graph_plot = gr.Plot()
                 with gr.Column(scale=2):
-                    adj_matrix_datatable = gr.DataFrame(label="Adjacency matrix", height=400, wrap=False, interactive=False)
+                    adj_matrix_datatable = gr.DataFrame(label="Adjacency matrix", wrap=False, interactive=False)
             with gr.Row():
-                node_features_datatable = gr.DataFrame(label="Node features", height=400, wrap=False, interactive=False)
+                node_features_datatable = gr.DataFrame(label="Node features", wrap=False, interactive=False)
             with gr.Row():
                 with gr.Column(scale=1):
-                    edge_index_datatable = gr.DataFrame(label="Edge index", height=400, wrap=False, interactive=False)
+                    edge_index_datatable = gr.DataFrame(label="Edge index", wrap=False, interactive=False)
                 with gr.Column(scale=5):
-                    edge_features_datatable = gr.DataFrame(label="Edge features", height=400, wrap=False, interactive=False)
+                    edge_features_datatable = gr.DataFrame(label="Edge features", wrap=False, interactive=False)
     
-        create_molecule_button.click(on_create_molecule, molecule_editor, molecule_viewer)
+        create_molecule_button.click(on_create_molecule, molecule_editor, [molecule_viewer, create_graph_button])
         create_graph_button.click(on_create_graph, [molecule_editor, featurizer_dropdown], [graph_plot, node_features_datatable, edge_index_datatable, adj_matrix_datatable, edge_features_datatable])
     
     return graph_tab

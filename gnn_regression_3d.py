@@ -12,7 +12,7 @@ from matplotlib import pyplot as plt
 from datasets import *
 from models import *
 
-def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, target_column_textbox: gr.Textbox, test_size_slider: gr.Slider, val_size_slider: gr.Slider, batch_size_dropdown: gr.Dropdown) :
+def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, target_column_textbox: gr.Textbox, test_size_slider: gr.Slider, val_size_slider: gr.Slider, batch_size_dropdown: gr.Dropdown, random_seed_slider: gr.Slider):
     # Load dataset
     dataset_file_path = dataset_file
     dataset_name = dataset_name_textbox
@@ -30,6 +30,9 @@ def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, tar
         val_size = int(len(dataset) * val_size_slider)
         train_size = len(dataset) - test_size - val_size
 
+        torch.manual_seed(random_seed_slider)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(random_seed_slider)
         train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size])
 
         # DataLoaders
@@ -41,9 +44,10 @@ def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, tar
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size_dropdown)
     except Exception as exc:
         gr.Warning("Error!\n" + exc.args)
-        return None
+        return None, None
     
-    return f"Data processed: {len(dataset)} molecules."
+    create_model_button = gr.Button(value="Create model", interactive=True)
+    return f"Data processed: {len(dataset)} molecules.",create_model_button
 
 gnn_model_tab = "SchNet"
 def on_gnn_model_tab_selected(evt: gr.SelectData):
@@ -55,9 +59,12 @@ def on_gnn_model_tab_selected(evt: gr.SelectData):
 
 def on_create_model(schnet_n_hiddens: gr.Dropdown, schnet_n_filters: gr.Dropdown, schnet_n_interactions: gr.Slider, schnet_n_gaussians: gr.Slider, schnet_cutoff: gr.Slider, schnet_max_num_neighbors: gr.Slider, schnet_readout: gr.Radio, schnet_dipole: gr.Checkbox,
                     dimenetplusplus_n_hiddens: gr.Dropdown, dimenetplusplus_n_blocks: gr.Slider, dimenetplusplus_int_emb_size: gr.Dropdown, dimenetplusplus_basis_emb_size: gr.Dropdown, dimenetplusplus_out_emb_channels: gr.Dropdown, dimenetplusplus_n_spherical: gr.Slider, dimenetplusplus_n_radial: gr.Slider, dimenetplusplus_cutoff: gr.Slider, dimenetplusplus_max_num_neighbors: gr.Slider, dimenetplusplus_envelope_exponent: gr.Slider, dimenetplusplus_n_output_layers: gr.Slider,
-                    visnet_n_hiddens: gr.Dropdown, visnet_n_heads: gr.Slider, visnet_n_layers: gr.Slider, visnet_num_rbf: gr.Slider, visnet_trainable_rbf: gr.Checkbox, visnet_max_z: gr.Slider, visnet_cutoff: gr.Slider, visnet_max_num_neighbors: gr.Slider, visnet_vertex: gr.Checkbox):
+                    visnet_n_hiddens: gr.Dropdown, visnet_n_heads: gr.Slider, visnet_n_layers: gr.Slider, visnet_num_rbf: gr.Slider, visnet_trainable_rbf: gr.Checkbox, visnet_max_z: gr.Slider, visnet_cutoff: gr.Slider, visnet_max_num_neighbors: gr.Slider, visnet_vertex: gr.Checkbox, random_seed_slider: gr.Slider):
     global device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    torch.manual_seed(random_seed_slider)
+    if device == 'cuda':
+        torch.cuda.manual_seed(random_seed_slider)
 
     global model
 
@@ -84,7 +91,13 @@ def on_create_model(schnet_n_hiddens: gr.Dropdown, schnet_n_filters: gr.Dropdown
     val_losses = []
     trained_epochs = 0
 
-    return [gnn_model_tab, f'Model created: {gnn_model_tab}.']
+    save_checkpoint_button = gr.Button(value="Save checkpoint", interactive=True)
+    load_checkpoint_button = gr.Button(value="Load checkpoint", interactive=True)
+    create_optimizer_button = gr.Button(value="Create optimizer", interactive=True)
+    evaluate_button = gr.Button(value="Evaluate", interactive=True)
+    predict_button = gr.Button(value="Predict", interactive=True)
+
+    return gnn_model_tab, f'Model created: {gnn_model_tab}.', save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, predict_button
 
 trained_epochs = 0
 def on_save_checkpoint(model_name_textbox: gr.Textbox):
@@ -129,7 +142,10 @@ def on_create_optimizer(optimizer_dropdown: gr.Dropdown, learning_rate_slider: g
     train_losses = []
     val_losses = []
     trained_epochs = 0
-    return "Optimizer created."
+
+    train_button = gr.Button(value="Train", interactive=True)
+
+    return "Optimizer created.", train_button
 
 # Define the train function
 def train(dataloader, model_name):
@@ -196,7 +212,9 @@ def on_train(epochs_slider: gr.Slider, created_model_name: gr.Textbox, progress=
         plt.grid(True)
         plt.close()
     
-    return figure
+    export_losses_button = gr.Button(value="Export", interactive=True)
+
+    return figure, export_losses_button
 
 def on_export_losses():
     df = pd.DataFrame()
@@ -240,14 +258,6 @@ def on_evaluate(created_model_name: gr.Textbox):
     y_test = output_scaler.inverse_transform(y_test_scaled.reshape(-1,1)).reshape(-1)
     y_pred = output_scaler.inverse_transform(y_pred_scaled.reshape(-1,1)).reshape(-1)
 
-    # Visualization
-    figure = plt.figure(figsize=(8, 8))
-    plt.scatter(y_test, y_pred)
-    plt.xlabel('actual value')
-    plt.ylabel('predicted value')
-    plt.grid(True)
-    plt.close()
-
     # Evaluate the model using different metrics
     mae = mean_absolute_error(y_test, y_pred)
     mse = mean_squared_error(y_test, y_pred)
@@ -284,7 +294,17 @@ def on_evaluate(created_model_name: gr.Textbox):
     </div>
     """.format(mae, mse, rmse, r2)
 
-    return [figure, html]
+    # Visualization
+    scatter_plot = plt.figure(figsize=(8, 8))
+    plt.scatter(y_test, y_pred)
+    plt.xlabel('actual value')
+    plt.ylabel('predicted value')
+    plt.grid(True)
+    plt.close()
+
+    export_scatter_plot_button = gr.Button(value="Export", interactive=True)
+
+    return [html, scatter_plot, export_scatter_plot_button]
 
 def on_export_scatter_plot():
     df = pd.DataFrame()
@@ -343,7 +363,9 @@ def on_predict(created_model_name: gr.Textbox):
     prediction_df['smiles'] = smiles_list
     prediction_df[dataset.target_column] = y_pred.tolist()
     
-    return prediction_df
+    export_prediction_button = gr.Button(value="Export", interactive=True)
+
+    return prediction_df, export_prediction_button
 
 def on_export_prediction():
     file_path = f'.\\{prediction_dataset.dataset_name}_prediction.csv'
@@ -355,13 +377,14 @@ def gnn_regression_3d_tab_content():
         with gr.Accordion("Dataset"):
             with gr.Row(equal_height=True):
                 with gr.Column(scale=1):
-                    dataset_file = gr.File(file_types=['csv'], type='filepath', label="Dataset file")
+                    dataset_file = gr.File(file_types=['.csv'], type='filepath', label="Dataset file")
                     dataset_name_textbox = gr.Textbox(label="Dataset name", placeholder="dataset", value="dataset")
                     target_column_textbox = gr.Textbox(label="Target column")
                 with gr.Column(scale=1):
                     test_size_slider = gr.Slider(minimum=0, maximum=0.4, value=0.2, step=0.01, label="Test size")
                     val_size_slider = gr.Slider(minimum=0, maximum=0.4, value=0.2, step=0.01, label="Validation size")
                     batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64])
+                    random_seed_slider = gr.Slider(minimum=0, maximum=1000, value=0, step=1, label="Random seed")
                     process_data_button = gr.Button(value="Process data")
                     process_data_markdown = gr.Markdown()
         with gr.Accordion("3D GNN model"):
@@ -409,14 +432,14 @@ def gnn_regression_3d_tab_content():
                                     visnet_vertex = gr.Checkbox(label="vertex", value=False)
                             visnet_tab.select(on_gnn_model_tab_selected, [], [])
                 with gr.Column(scale=1):
-                    create_model_button = gr.Button(value="Create model")
+                    create_model_button = gr.Button(value="Create model", interactive=False)
                     created_model_name_textbox = gr.Text(value="SchNet", visible=False)
                     model_summary_markdown = gr.Markdown()
                     model_name_textbox = gr.Textbox(label="Model name", placeholder="model", value="model")
-                    save_checkpoint_button = gr.Button(value="Save checkpoint")
+                    save_checkpoint_button = gr.Button(value="Save checkpoint", interactive=False)
                     save_checkpoint_markdown = gr.Markdown()
                     checkpoint_file = gr.File(file_types=['ckpt'], type='filepath', label="Checkpoint file")
-                    load_checkpoint_button = gr.Button(value="Load checkpoint")
+                    load_checkpoint_button = gr.Button(value="Load checkpoint", interactive=False)
                     load_checkpoint_markdown = gr.Markdown()
         with gr.Accordion("Model training"):
             with gr.Row(equal_height=True): 
@@ -426,7 +449,7 @@ def gnn_regression_3d_tab_content():
                         optimizer_dropdown = gr.Dropdown(label="Optimizer", value="Adam", choices=["Adam", "AdamW", "SGD"]) 
                         learning_rate_slider = gr.Slider(label="Learning rate", minimum=0.00001, maximum=0.1, value=0.001, step=0.00001) 
                         learning_rate_decay_slider = gr.Slider(label="Learning rate decay", minimum=0.5, maximum=1, value=0.99, step=0.001)
-                    create_optimizer_button = gr.Button(value="Create optimizer")
+                    create_optimizer_button = gr.Button(value="Create optimizer", interactive=False)
                     create_optimizer_markdown = gr.Markdown()
                 with gr.Column(scale=3):
                     gr.Markdown(value="Training")  
@@ -434,25 +457,22 @@ def gnn_regression_3d_tab_content():
                         with gr.Column(scale=1):
                             epochs_slider = gr.Slider(label="Epochs", minimum=1, maximum=1000, value=100, step=1)
                         with gr.Column(scale=1):
-                            train_button = gr.Button(value="Train")
+                            train_button = gr.Button(value="Train", interactive=False)
                     with gr.Row(): 
                         with gr.Column(scale=3):
                             training_plot = gr.Plot()
                         with gr.Column(scale=1):
-                            export_losses_button = gr.Button(value="Export")
+                            export_losses_button = gr.Button(value="Export", interactive=False)
                             export_losses_markdown = gr.Markdown()
         with gr.Accordion("Model evaluation"):
             with gr.Row(equal_height=True):
                 with gr.Column(scale=1):
-                    evaluate_button = gr.Button(value="Evaluate")
-                    evaluation_metrics_html = gr.HTML()   
+                    evaluate_button = gr.Button(value="Evaluate", interactive=False)
+                    evaluation_metrics_html = gr.HTML()     
+                    export_scatter_plot_button = gr.Button(value="Export", interactive=False)
+                    export_scatter_plot_markdown = gr.Markdown()
                 with gr.Column(scale=2):
-                    with gr.Row(equal_height=True):
-                        with gr.Column(scale=1):
-                            evaluation_plot = gr.Plot()
-                        with gr.Column(scale=1):
-                            export_scatter_plot_button = gr.Button(value="Export")
-                            export_scatter_plot_markdown = gr.Markdown()
+                    evaluation_plot = gr.Plot()
         with gr.Accordion("Make prediction"):
             with gr.Row(equal_height=True):
                 with gr.Column(scale=1):
@@ -463,27 +483,28 @@ def gnn_regression_3d_tab_content():
                 with gr.Column(scale=2):
                     with gr.Row(equal_height=True): 
                         with gr.Column(scale=1):
-                            predict_button = gr.Button(value="Predict")
+                            predict_button = gr.Button(value="Predict", interactive=False)
                         with gr.Column(scale=1):
-                            export_prediction_button = gr.Button(value="Export")
+                            export_prediction_button = gr.Button(value="Export", interactive=False)
                             export_prediction_markdown = gr.Markdown()
                     with gr.Row(): 
-                        prediction_datatable = gr.DataFrame(label="Prediction", height=400, wrap=False, interactive=False)
+                        prediction_datatable = gr.DataFrame(label="Prediction", wrap=False, interactive=False)
 
-    process_data_button.click(on_process_data, [dataset_file, dataset_name_textbox, target_column_textbox, test_size_slider, val_size_slider, batch_size_dropdown], process_data_markdown)
+    process_data_button.click(on_process_data, [dataset_file, dataset_name_textbox, target_column_textbox, test_size_slider, val_size_slider, batch_size_dropdown, random_seed_slider],
+                              [process_data_markdown, create_model_button])
     create_model_button.click(on_create_model, [schnet_n_hiddens, schnet_n_filters, schnet_n_interactions, schnet_n_gaussians, schnet_cutoff, schnet_max_num_neighbors, schnet_readout, schnet_dipole,
                                                 dimenetplusplus_n_hiddens, dimenetplusplus_n_blocks, dimenetplusplus_int_emb_size, dimenetplusplus_basis_emb_size, dimenetplusplus_out_emb_channels, dimenetplusplus_n_spherical, dimenetplusplus_n_radial, dimenetplusplus_cutoff, dimenetplusplus_max_num_neighbors, dimenetplusplus_envelope_exponent, dimenetplusplus_n_output_layers,
-                                                visnet_n_hiddens, visnet_n_heads, visnet_n_layers, visnet_num_rbf, visnet_trainable_rbf, visnet_max_z, visnet_cutoff, visnet_max_num_neighbors, visnet_vertex],
-                                                [created_model_name_textbox, model_summary_markdown])
+                                                visnet_n_hiddens, visnet_n_heads, visnet_n_layers, visnet_num_rbf, visnet_trainable_rbf, visnet_max_z, visnet_cutoff, visnet_max_num_neighbors, visnet_vertex, random_seed_slider],
+                                                [created_model_name_textbox, model_summary_markdown, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, predict_button])
     save_checkpoint_button.click(on_save_checkpoint, model_name_textbox, save_checkpoint_markdown)
     load_checkpoint_button.click(on_load_checkpoint, checkpoint_file, load_checkpoint_markdown)
-    create_optimizer_button.click(on_create_optimizer, [optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], create_optimizer_markdown)
-    train_button.click(on_train, [epochs_slider, created_model_name_textbox], training_plot)
+    create_optimizer_button.click(on_create_optimizer, [optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [create_optimizer_markdown, train_button])
+    train_button.click(on_train, [epochs_slider, created_model_name_textbox], [training_plot, export_losses_button])
     export_losses_button.click(on_export_losses, [], export_losses_markdown)
-    evaluate_button.click(on_evaluate, created_model_name_textbox, [evaluation_plot, evaluation_metrics_html])
+    evaluate_button.click(on_evaluate, created_model_name_textbox, [evaluation_metrics_html, evaluation_plot, export_scatter_plot_button])
     export_scatter_plot_button.click(on_export_scatter_plot, [], export_scatter_plot_markdown)
     process_prediction_data_button.click(on_process_prediction_data, [prediction_dataset_file, prediction_dataset_name_textbox, batch_size_dropdown], process_prediction_data_markdown)
-    predict_button.click(on_predict, created_model_name_textbox, prediction_datatable)
+    predict_button.click(on_predict, created_model_name_textbox, [prediction_datatable, export_prediction_button])
     export_prediction_button.click(on_export_prediction, [], export_prediction_markdown)
     
     return gnn_regression_3d_tab

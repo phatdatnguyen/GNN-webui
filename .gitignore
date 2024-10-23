@@ -1,7 +1,10 @@
-gnn-webui-venv/
+__pycache__/
+gnn-venv/
+.vs/
+.ipynb_checkpoints/
+.gradio/
 Datasets/
 Checkpoints/
-__pycache__/
 .vs/
 *.csv
 *.pdb
