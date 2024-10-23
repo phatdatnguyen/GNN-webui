@@ -24,10 +24,12 @@ Install other packages
 
 ```
 pip install rdkit
+pip install tensorflow
 pip install deepchem
 pip install gradio
 pip install gradio_molecule2d
 pip install gradio_molecule3d
+pip install plotly
 ```
 
 ## Start web UI
