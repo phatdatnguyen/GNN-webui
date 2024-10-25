@@ -24,6 +24,7 @@ Install other packages
 
 ```
 pip install rdkit
+pip install mordred
 pip install tensorflow
 pip install deepchem
 pip install gradio

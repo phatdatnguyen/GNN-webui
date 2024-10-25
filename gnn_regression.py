@@ -45,7 +45,7 @@ def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, tar
         test_dataloader = DataLoader(test_dataset, batch_size=batch_size_dropdown)
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size_dropdown)
     except Exception as exc:
-        gr.Warning("Error!\n" + exc.args)
+        gr.Warning("Error!\n" + str(exc.args))
         return None, None
     
     create_model_button = gr.Button(value="Create model", interactive=True)
