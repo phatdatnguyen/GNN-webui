@@ -64,94 +64,104 @@ def on_create_model(gcn_model_name: gr.Dropdown, gcn_n_hiddens: gr.Dropdown, gcn
         torch.cuda.manual_seed(random_seed_slider)
 
     global model
-    if gcn_model_name == "GCN":
-        model = GCNModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "GraphSAGE":
-        model = GraphSAGEModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "CuGraphSAGE":
-        model = CuGraphSAGEModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "SGConv":
-        model = SGConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "ClusterGCN":
-        model = ClusterGCNModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "GraphConv":
-        model = GraphConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "ChebConv":
-        model = ChebConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "LEConv":
-        model = LEConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "EGConv":
-        model = EGConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "MFConv":
-        model = MFConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "FeaStConv":
-        model = FeaStConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "TAGConv":
-        model = TAGConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "ARMAConv":
-        model = ARMAConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "FiLMConv":
-        model = FiLMConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "PDNConv":
-        model = PDNConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs, edge_dim, gcn_n_hiddens,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "GENConv":
-        model = GENConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs, edge_dim,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "ResGatedGraphConv":
-        model = ResGatedGraphConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs, edge_dim,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "GAT":
-        model = GATModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "GATv2":
-        model = GATv2Model(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs, edge_dim,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "SuperGAT":
-        model = SuperGATModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "TransformerConv":
-        model = TransformerConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs, edge_dim,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
-    elif gcn_model_name == "GeneralConv":
-        model = GeneralConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs, edge_dim,
-                         mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                         predictor_n_hiddens, predictor_n_layers).to(device)
+    try:
+        if gcn_model_name == "GCN":
+            model = GCNModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "GraphSAGE":
+            model = GraphSAGEModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "CuGraphSAGE":
+            model = CuGraphSAGEModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "SGConv":
+            model = SGConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "ClusterGCN":
+            model = ClusterGCNModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "GraphConv":
+            model = GraphConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "ChebConv":
+            model = ChebConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "LEConv":
+            model = LEConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "EGConv":
+            model = EGConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "MFConv":
+            model = MFConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "FeaStConv":
+            model = FeaStConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "TAGConv":
+            model = TAGConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "ARMAConv":
+            model = ARMAConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "FiLMConv":
+            model = FiLMConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "PDNConv":
+            model = PDNConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs, edge_dim, gcn_n_hiddens,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "GENConv":
+            model = GENConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs, edge_dim,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "ResGatedGraphConv":
+            model = ResGatedGraphConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_outputs, edge_dim,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "GAT":
+            model = GATModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "GATv2":
+            model = GATv2Model(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs, edge_dim,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "SuperGAT":
+            model = SuperGATModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "TransformerConv":
+            model = TransformerConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs, edge_dim,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+        elif gcn_model_name == "GeneralConv":
+            model = GeneralConvModel(gcn_n_inputs, gcn_n_hiddens, gcn_n_layers, gcn_n_heads, gcn_n_outputs, edge_dim,
+                            mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                            predictor_n_hiddens, predictor_n_layers).to(device)
+    except Exception as exc:
+        gr.Warning(str(exc))
+        model = None
+        save_checkpoint_button = gr.Button(value="Save checkpoint", interactive=False)
+        load_checkpoint_button = gr.Button(value="Load checkpoint", interactive=False)
+        create_optimizer_button = gr.Button(value="Create optimizer", interactive=False)
+        evaluate_button = gr.Button(value="Evaluate", interactive=False)
+        predict_button = gr.Button(value="Predict", interactive=False)
+        return None, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, predict_button
     
     global train_losses
     global val_losses
@@ -179,7 +189,7 @@ def on_create_model(gcn_model_name: gr.Dropdown, gcn_n_hiddens: gr.Dropdown, gcn
     evaluate_button = gr.Button(value="Evaluate", interactive=True)
     predict_button = gr.Button(value="Predict", interactive=True)
     
-    if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+    if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "SuperGATConv"]:
         return summary(model, x, edge_index, batch_index, mol_features_scaled), save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, predict_button
     else:
         edge_attr = graph_data.edge_attr.float().to(device)
@@ -245,7 +255,7 @@ def train(dataloader, gcn_model_name):
         mol_features_scaled = mol_features_scaler.transform(mol_features)
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         y = batch.y.float().to(device)
-        if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+        if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "SuperGATConv"]:
             output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
         else:
             edge_attr = batch.edge_attr.float().to(device)
@@ -272,7 +282,7 @@ def validation(dataloader, gcn_model_name):
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         y = batch.y.float().to(device)
         with torch.no_grad():
-            if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+            if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "SuperGATConv"]:
                 output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
             else:
                 edge_attr = batch.edge_attr.float().to(device)
@@ -333,7 +343,7 @@ def test(dataloader, gcn_model_name):
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         y = batch.y.float().to(device)
         with torch.no_grad():
-            if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+            if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "SuperGATConv"]:
                 output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
             else:
                 edge_attr = batch.edge_attr.float().to(device)
@@ -466,7 +476,7 @@ def predict(dataloader, gcn_model_name):
         mol_features_scaled = mol_features_scaler.transform(mol_features)
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         with torch.no_grad():
-            if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv",  "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv"]:
+            if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv",  "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "SuperGATConv"]:
                 output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
             else:
                 edge_attr = batch.edge_attr.float().to(device)
@@ -521,13 +531,13 @@ def gnn_binary_classification_tab_content():
                         gcn_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
                         gcn_n_layers = gr.Slider(label="n_layers", minimum=1, maximum=6, value=3, step=1)
                         gcn_n_heads = gr.Slider(label="n_heads", minimum=1, maximum=8, value=3, step=1)
-                        gcn_n_outputs = gr.Slider(label="n_outputs", minimum=1, maximum=512, value=50, step=1)
+                        gcn_n_outputs = gr.Slider(label="n_outputs", minimum=0, maximum=512, value=50, step=1)
                 with gr.Column(scale=1):
                     with gr.Group():
                         gr.Markdown(value="Molecular feature layers")
                         mlp_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
-                        mlp_n_layers = gr.Slider(label="n_layers", minimum=0, maximum=6, value=3, step=1)
-                        mlp_n_outputs = gr.Slider(label="n_outputs", minimum=1, maximum=512, value=50, step=1)
+                        mlp_n_layers = gr.Slider(label="n_layers", minimum=1, maximum=6, value=3, step=1)
+                        mlp_n_outputs = gr.Slider(label="n_outputs", minimum=0, maximum=512, value=50, step=1)
                     with gr.Group():
                         gr.Markdown(value="Predictor layers")
                         predictor_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
