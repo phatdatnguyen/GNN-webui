@@ -511,7 +511,7 @@ def gnn_regression_tab_content():
                     with gr.Group():
                         gr.Markdown(value="Predictor layers")
                         predictor_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
-                        predictor_n_layers = gr.Slider(label="n_layers", minimum=1, maximum=6, value=3, step=1)
+                        predictor_n_layers = gr.Slider(label="n_layers", minimum=0, maximum=6, value=3, step=1)
                 with gr.Column(scale=1):
                     create_model_button = gr.Button(value="Create model", interactive=False)
                     model_name_textbox = gr.Textbox(label="Model name", placeholder="model", value="model")

@@ -32,11 +32,15 @@ class GCNModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -65,8 +69,9 @@ class GCNModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
     
@@ -99,11 +104,15 @@ class GraphSAGEModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -131,9 +140,9 @@ class GraphSAGEModel(torch.nn.Module):
             h = h1
         elif h2 != None:
             h = h2
-        
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
     
@@ -166,11 +175,15 @@ class CuGraphSAGEModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -199,8 +212,9 @@ class CuGraphSAGEModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -233,11 +247,15 @@ class SGConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -266,8 +284,9 @@ class SGConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -300,11 +319,15 @@ class ClusterGCNModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -333,8 +356,9 @@ class ClusterGCNModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -367,11 +391,15 @@ class GraphConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -400,8 +428,9 @@ class GraphConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
     
@@ -434,11 +463,15 @@ class ChebConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -467,8 +500,9 @@ class ChebConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -501,11 +535,15 @@ class LEConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -534,8 +572,9 @@ class LEConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -568,11 +607,15 @@ class EGConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -601,8 +644,9 @@ class EGConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -635,11 +679,15 @@ class MFConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -668,6 +716,10 @@ class MFConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
+
         return self.out(h)
 
 class FeaStConvModel(torch.nn.Module):
@@ -699,11 +751,15 @@ class FeaStConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -732,8 +788,9 @@ class FeaStConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -766,11 +823,15 @@ class TAGConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -799,8 +860,9 @@ class TAGConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -833,11 +895,15 @@ class ARMAConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -866,8 +932,9 @@ class ARMAConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -900,11 +967,15 @@ class FiLMConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -933,8 +1004,9 @@ class FiLMConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -970,11 +1042,15 @@ class PDNConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -1003,8 +1079,9 @@ class PDNConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -1040,11 +1117,15 @@ class GENConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -1073,8 +1154,9 @@ class GENConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -1110,11 +1192,15 @@ class ResGatedGraphConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -1143,8 +1229,9 @@ class ResGatedGraphConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -1180,11 +1267,15 @@ class GATModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -1213,8 +1304,9 @@ class GATModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -1250,11 +1342,15 @@ class GATv2Model(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -1283,8 +1379,9 @@ class GATv2Model(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
     
@@ -1320,11 +1417,15 @@ class SuperGATModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -1353,8 +1454,9 @@ class SuperGATModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
    
@@ -1393,11 +1495,15 @@ class TransformerConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -1428,8 +1534,9 @@ class TransformerConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)
 
@@ -1465,11 +1572,15 @@ class GeneralConvModel(torch.nn.Module):
         
         # Predictor layers
         self.predictor = ModuleList()
-        self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
-        for i in range(1, n_predictor_layers):
-            self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
+        if n_predictor_layers > 0:
+            self.predictor.append(Linear(n_gcn_outputs + n_mlp_outputs, n_predictor_hiddens))
+            for i in range(1, n_predictor_layers):
+                self.predictor.append(Linear(n_predictor_hiddens, n_predictor_hiddens))
         
-        self.out = Linear(n_predictor_hiddens, 1)
+        if n_predictor_layers > 0:
+            self.out = Linear(n_predictor_hiddens, 1)
+        else:
+            self.out = Linear(n_gcn_outputs + n_mlp_outputs, 1)
         
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         if len(self.gcn) > 0:
@@ -1498,7 +1609,8 @@ class GeneralConvModel(torch.nn.Module):
         elif h2 != None:
             h = h2
         
-        for i, linear in enumerate(self.predictor):
-            h = torch.relu(linear(h))
+        if len(self.predictor) > 0:
+            for i, linear in enumerate(self.predictor):
+                h = torch.relu(linear(h))
         
         return self.out(h)

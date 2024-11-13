@@ -1,5 +1,5 @@
 __pycache__/
-gnn-venv/
+gnn-env/
 .vs/
 .ipynb_checkpoints/
 .gradio/
