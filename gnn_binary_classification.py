@@ -362,7 +362,7 @@ def on_evaluate(gcn_model_name: gr.Dropdown):
     global test_smiles_arr
 
     # Run the model forward to get the test result
-    y_test, logits, smiles_arr = test(test_dataloader, gcn_model_name)
+    y_test, logits, test_smiles_arr = test(test_dataloader, gcn_model_name)
     probabilities = torch.sigmoid(logits)
     y_pred = torch.round(probabilities).int().detach().numpy()
     y_test = y_test.int().detach().numpy()

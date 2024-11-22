@@ -254,7 +254,7 @@ def on_evaluate(created_model_name: gr.Textbox):
     
     # Run the model forward to get the test result
     global test_smiles_arr
-    y_test_scaled, y_pred_scaled, smiles_arr = test(test_dataloader, created_model_name)
+    y_test_scaled, y_pred_scaled, test_smiles_arr = test(test_dataloader, created_model_name)
 
     # Scale the outputs back to the original range
     global y_test
