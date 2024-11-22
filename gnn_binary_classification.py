@@ -335,6 +335,7 @@ def test(dataloader, gcn_model_name):
     model.eval()
     y_test = torch.tensor([])
     logits = torch.tensor([])
+    smiles_arr = []
     for batch in dataloader:
         x = batch.x.float().to(device)
         edge_index = batch.edge_index.long().to(device)
@@ -342,6 +343,7 @@ def test(dataloader, gcn_model_name):
         mol_features_scaled = mol_features_scaler.transform(mol_features)
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         y = batch.y.float().to(device)
+        smiles = batch.smiles
         with torch.no_grad():
             if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "SuperGATConv"]:
                 output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
@@ -350,15 +352,17 @@ def test(dataloader, gcn_model_name):
                 output = model(x, edge_index, edge_attr, batch.batch.to(device), mol_features_scaled)
             y_test = torch.cat((y_test, y.cpu().detach()), dim=0)
             logits = torch.cat((logits, output.cpu().detach()), dim=0)
+            smiles_arr.append(smiles)
         batch_index += 1
-    return y_test, logits
+    return y_test, logits, smiles_arr
 
 def on_evaluate(gcn_model_name: gr.Dropdown):
     global y_test
     global y_pred
+    global test_smiles_arr
 
     # Run the model forward to get the test result
-    y_test, logits = test(test_dataloader, gcn_model_name)
+    y_test, logits, smiles_arr = test(test_dataloader, gcn_model_name)
     probabilities = torch.sigmoid(logits)
     y_pred = torch.round(probabilities).int().detach().numpy()
     y_test = y_test.int().detach().numpy()
@@ -441,6 +445,7 @@ def on_export_evaluation():
     df = pd.DataFrame()
     df['y_test'] = y_test.tolist()
     df['y_pred'] = y_pred.tolist()
+    df['SMILES'] = test_smiles_arr
     file_path = f'.\\{dataset.dataset_name}_{trained_epochs}_eval.csv'
     df.to_csv(file_path)
     return f'Evaluation exported to {file_path}.'

@@ -228,10 +228,12 @@ def test(dataloader, model_name):
     model.eval()
     y_test = torch.tensor([])
     y_pred = torch.tensor([])
+    smiles_arr = []
     for batch in dataloader:
         z = batch.z.long().to(device)
         pos = batch.pos.float().to(device)
         y = batch.y.float().to(device)
+        smiles = batch.smiles
         with torch.no_grad():
             if model_name == "SchNet" or model_name == "DimeNet++":
                 output = model(z, pos, batch.batch.to(device))
@@ -239,15 +241,17 @@ def test(dataloader, model_name):
                 output, _ = model(z, pos, batch.batch.to(device))
             y_test = torch.cat((y_test, y.cpu().detach()), dim=0)
             y_pred = torch.cat((y_pred, output.cpu().detach()), dim=0)
+            smiles_arr.append(smiles)
         batch_index += 1
-    return y_test, y_pred
+    return y_test, y_pred, smiles_arr
 
 def on_evaluate(model_name: gr.Dropdown):
     global y_test
     global y_pred
+    global test_smiles_arr
 
     # Run the model forward to get the test result
-    y_test, logits = test(test_dataloader, model_name)
+    y_test, logits, smiles_arr = test(test_dataloader, model_name)
     probabilities = torch.sigmoid(logits)
     y_pred = torch.round(probabilities).int().detach().numpy()
     y_test = y_test.int().detach().numpy()
@@ -323,6 +327,7 @@ def on_export_evaluation():
     df = pd.DataFrame()
     df['y_test'] = y_test.tolist()
     df['y_pred'] = y_pred.tolist()
+    df['SMILES'] = test_smiles_arr
     file_path = f'.\\{dataset.dataset_name}_{trained_epochs}_eval.csv'
     df.to_csv(file_path)
     return f'Evaluation exported to {file_path}.'
@@ -456,7 +461,7 @@ def gnn_binary_classification_3d_tab_content():
                     with gr.Group():
                         gr.Markdown(value="Optimizer")
                         optimizer_dropdown = gr.Dropdown(label="Optimizer", value="Adam", choices=["Adam", "AdamW", "SGD"]) 
-                        learning_rate_slider = gr.Slider(label="Learning rate", minimum=0.00001, maximum=0.1, value=0.001, step=0.00001) 
+                        learning_rate_slider = gr.Slider(label="Learning rate", minimum=0.00001, maximum=0.1, value=0.0001, step=0.00001) 
                         learning_rate_decay_slider = gr.Slider(label="Learning rate decay", minimum=0.5, maximum=1, value=0.99, step=0.001)
                     create_optimizer_button = gr.Button(value="Create optimizer", interactive=False)
                     create_optimizer_markdown = gr.Markdown()

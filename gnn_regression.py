@@ -324,6 +324,7 @@ def test(dataloader, gcn_model_name):
     model.eval()
     y_test = torch.tensor([])
     y_pred = torch.tensor([])
+    smiles_arr = []
     for batch in dataloader:
         x = batch.x.float().to(device)
         edge_index = batch.edge_index.long().to(device)
@@ -331,6 +332,7 @@ def test(dataloader, gcn_model_name):
         mol_features_scaled = mol_features_scaler.transform(mol_features)
         mol_features_scaled = torch.tensor(mol_features_scaled).float().to(device)
         y = batch.y.float().to(device)
+        smiles = batch.smiles
         with torch.no_grad():
             if gcn_model_name in ["GCN", "GraphSAGE", "CuGraphSAGE", "SGConv", "ClusterGCN", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "SuperGATConv"]:
                 output = model(x, edge_index, batch.batch.to(device), mol_features_scaled)
@@ -339,15 +341,17 @@ def test(dataloader, gcn_model_name):
                 output = model(x, edge_index, edge_attr, batch.batch.to(device), mol_features_scaled)
             y_test = torch.cat((y_test, y.cpu().detach()), dim=0)
             y_pred = torch.cat((y_pred, output.cpu().detach()), dim=0)
+            smiles_arr.append(smiles)
         batch_index += 1
-    return y_test, y_pred
+    return y_test, y_pred, smiles_arr
 
 def on_evaluate(gcn_model_name: gr.Dropdown):
     # Get the output scaler
     output_scaler = dataset.output_scaler
     
     # Run the model forward to get the test result
-    y_test_scaled, y_pred_scaled = test(test_dataloader, gcn_model_name)
+    global test_smiles_arr
+    y_test_scaled, y_pred_scaled, test_smiles_arr = test(test_dataloader, gcn_model_name)
 
     # Scale the outputs back to the original range
     global y_test
@@ -407,6 +411,7 @@ def on_export_scatter_plot():
     df = pd.DataFrame()
     df['y_test'] = y_test.tolist()
     df['y_pred'] = y_pred.tolist()
+    df['SMILES'] = test_smiles_arr
     file_path = f'.\\{dataset.dataset_name}_{trained_epochs}_scatter_plot.csv'
     df.to_csv(file_path)
     return f'Scatter plot exported to {file_path}.'
