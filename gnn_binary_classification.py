@@ -352,7 +352,7 @@ def test(dataloader, gcn_model_name):
                 output = model(x, edge_index, edge_attr, batch.batch.to(device), mol_features_scaled)
             y_test = torch.cat((y_test, y.cpu().detach()), dim=0)
             logits = torch.cat((logits, output.cpu().detach()), dim=0)
-            smiles_arr.append(smiles)
+            smiles_arr.extend(smiles)
         batch_index += 1
     return y_test, logits, smiles_arr
 
@@ -552,7 +552,7 @@ def gnn_binary_classification_tab_content():
                     model_name_textbox = gr.Textbox(label="Model name", placeholder="model", value="model")
                     save_checkpoint_button = gr.Button(value="Save checkpoint", interactive=False)
                     save_checkpoint_markdown = gr.Markdown()
-                    checkpoint_file = gr.File(file_types=['ckpt'], type='filepath', label="Checkpoint file")
+                    checkpoint_file = gr.File(file_types=['.ckpt'], type='filepath', label="Checkpoint file")
                     load_checkpoint_button = gr.Button(value="Load checkpoint", interactive=False)
                     load_checkpoint_markdown = gr.Markdown()
             with gr.Row(equal_height=True):
@@ -594,7 +594,7 @@ def gnn_binary_classification_tab_content():
         with gr.Accordion("Make prediction"):
             with gr.Row(equal_height=True):
                 with gr.Column(scale=1):
-                    prediction_dataset_file = gr.File(file_types=['csv'], type='filepath', label="Prediction dataset file")
+                    prediction_dataset_file = gr.File(file_types=['.csv'], type='filepath', label="Prediction dataset file")
                     prediction_dataset_name_textbox = gr.Textbox(label="Dataset name", placeholder="prediction_dataset", value="prediction_dataset")
                     process_prediction_data_button = gr.Button(value="Process prediction data")
                     process_prediction_data_markdown = gr.Markdown()
