@@ -199,20 +199,37 @@ class MoleculeDatasetForRegression3D(Dataset):
         
         # Prepare the molecule
         mol = Chem.AddHs(mol)
-        AllChem.EmbedMolecule(mol)
-        AllChem.UFFOptimizeMolecule(mol, maxIters=200)
         
-        # Get z and pos
+        # Generate 30 conformers
+        num_confs = 30
+        params = AllChem.ETKDGv3()
+        ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
+        
+        # Optimize each conformer and store energies
+        energies = []
+        for conf_id in ids:
+            # Optimize conformer with UFF
+            AllChem.UFFOptimizeMolecule(mol, confId=conf_id, maxIters=200)
+            # Compute energy
+            ff = AllChem.UFFGetMoleculeForceField(mol, confId=conf_id)
+            energy = ff.CalcEnergy()
+            energies.append((conf_id, energy))
+        
+        # Find the conformer with the lowest energy
+        min_conf = min(energies, key=lambda x: x[1])[0]
+        
+        # Get z and pos from the lowest-energy conformer
         z = []
         pos_x = []
         pos_y = []
         pos_z = []
+        conformer = mol.GetConformer(id=min_conf)
         for atom_idx, atom in enumerate(mol.GetAtoms()):
             z.append(atom.GetAtomicNum())
-            atom_pos = mol.GetConformer().GetAtomPosition(atom_idx)
-            pos_x.append(atom_pos[0])
-            pos_y.append(atom_pos[1])
-            pos_z.append(atom_pos[2])
+            atom_pos = conformer.GetAtomPosition(atom_idx)
+            pos_x.append(atom_pos.x)
+            pos_y.append(atom_pos.y)
+            pos_z.append(atom_pos.z)
             
         z = np.array(z)
         pos_x = np.array(pos_x)
@@ -398,20 +415,37 @@ class MoleculeDatasetForRegressionPrediction3D(Dataset):
         
         # Prepare the molecule
         mol = Chem.AddHs(mol)
-        AllChem.EmbedMolecule(mol)
-        AllChem.UFFOptimizeMolecule(mol, maxIters=200)
         
-        # Get z and pos
+        # Generate 30 conformers
+        num_confs = 30
+        params = AllChem.ETKDGv3()
+        ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
+        
+        # Optimize each conformer and store energies
+        energies = []
+        for conf_id in ids:
+            # Optimize conformer with UFF
+            AllChem.UFFOptimizeMolecule(mol, confId=conf_id, maxIters=200)
+            # Compute energy
+            ff = AllChem.UFFGetMoleculeForceField(mol, confId=conf_id)
+            energy = ff.CalcEnergy()
+            energies.append((conf_id, energy))
+        
+        # Find the conformer with the lowest energy
+        min_conf = min(energies, key=lambda x: x[1])[0]
+        
+        # Get z and pos from the lowest-energy conformer
         z = []
         pos_x = []
         pos_y = []
         pos_z = []
+        conformer = mol.GetConformer(id=min_conf)
         for atom_idx, atom in enumerate(mol.GetAtoms()):
             z.append(atom.GetAtomicNum())
-            atom_pos = mol.GetConformer().GetAtomPosition(atom_idx)
-            pos_x.append(atom_pos[0])
-            pos_y.append(atom_pos[1])
-            pos_z.append(atom_pos[2])
+            atom_pos = conformer.GetAtomPosition(atom_idx)
+            pos_x.append(atom_pos.x)
+            pos_y.append(atom_pos.y)
+            pos_z.append(atom_pos.z)
             
         z = np.array(z)
         pos_x = np.array(pos_x)
