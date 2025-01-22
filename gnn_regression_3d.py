@@ -24,16 +24,10 @@ def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, tar
         dataset = MoleculeDatasetForRegression3D(dataset_file_path, dataset_name, target_column)
         
         # Train-validation-test splitting
-        dataset = dataset.shuffle()
-
         test_size = int(len(dataset) * test_size_slider)
         val_size = int(len(dataset) * val_size_slider)
         train_size = len(dataset) - test_size - val_size
-
-        torch.manual_seed(random_seed_slider)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(random_seed_slider)
-        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size])
+        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=torch.Generator().manual_seed(random_seed_slider))
 
         # DataLoaders
         global train_dataloader
