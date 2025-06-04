@@ -165,10 +165,10 @@ def on_create_model(gcn_model_name: gr.Dropdown, gcn_n_hiddens: gr.Dropdown, gcn
     trained_epochs = 0
 
     global mol_features_scaler
-    mol_features_arr = np.loadtxt('.\\Datasets\\' + dataset.dataset_name + '\\raw\\mol_features.csv', delimiter=",")
+    mol_features_arr = np.loadtxt('./Datasets/' + dataset.dataset_name + '/raw/mol_features.csv', delimiter=",")
     mol_features_scaler = MinMaxScaler(feature_range=(0, 1))
     mol_features_scaler.fit(mol_features_arr)
-
+    
     graph_data = dataset[0]
     x = graph_data.x.float().to(device)
     edge_index = graph_data.edge_index.long().to(device)
@@ -194,14 +194,14 @@ def on_save_checkpoint(model_name_textbox: gr.Textbox):
     checkpoint = {
         'state_dict': model.state_dict()
     }
-    checkpoint_dir = '.\\Checkpoints'
+    checkpoint_dir = './Checkpoints'
     checkpoint_name = f'{model_name_textbox}_{trained_epochs}.ckpt'
     os.makedirs(checkpoint_dir, exist_ok=True)
-    torch.save(checkpoint, checkpoint_dir + '\\' + checkpoint_name)
-    return f'Model was saved to {checkpoint_dir}\\{checkpoint_name}.'
+    torch.save(checkpoint, checkpoint_dir + '/' + checkpoint_name)
+    return f'Model was saved to {checkpoint_dir}/{checkpoint_name}.'
 
 def on_load_checkpoint(checkpoint_path: gr.File):
-    checkpoint = torch.load(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
     model.load_state_dict(checkpoint['state_dict'])
 
     global train_losses
@@ -318,7 +318,7 @@ def on_export_losses():
     df = pd.DataFrame()
     df['train_losses'] = train_losses
     df['val_losses'] = val_losses
-    file_path = f'.\\{dataset.dataset_name}_{trained_epochs}_losses.csv'
+    file_path = f'./{dataset.dataset_name}_{trained_epochs}_losses.csv'
     df.to_csv(file_path)
     return f'Losses exported to {file_path}.'
 
@@ -440,7 +440,7 @@ def on_export_evaluation():
     df['y_test'] = y_test.tolist()
     df['y_pred'] = y_pred.tolist()
     df['SMILES'] = test_smiles_arr
-    file_path = f'.\\{dataset.dataset_name}_{trained_epochs}_eval.csv'
+    file_path = f'./{dataset.dataset_name}_{trained_epochs}_eval.csv'
     df.to_csv(file_path)
     return f'Evaluation exported to {file_path}.'
 
@@ -499,7 +499,7 @@ def on_predict(gcn_model_name: gr.Dropdown):
     return prediction_df, export_prediction_button
 
 def on_export_prediction():
-    file_path = f'.\\{prediction_dataset.dataset_name}_prediction.csv'
+    file_path = f'./{prediction_dataset.dataset_name}_prediction.csv'
     prediction_df.to_csv(file_path)
     return f'Prediction exported to {file_path}.'
 
@@ -515,9 +515,9 @@ def gnn_binary_classification_tab_content():
                     gcn_featurizer_dropdown = gr.Dropdown(label="Graph featurizer", value="MolGraphConvFeaturizer", choices=["MolGraphConvFeaturizer", "PagtnMolGraphFeaturizer", "DMPNNFeaturizer"])
                     mol_featurizer_dropdown = gr.Dropdown(label="Molecule featurizer", value="Mordred descriptors", choices=["Mordred descriptors", "RDKit descriptors", "MACCS keys", "Morgan fingerprint", "Avalon fingerprint", "Atom-pairs fingerprint", "Topological-torsion fingerprint", "Layered fingerprint", "Pattern fingerprint", "RDKit fingerprint"])
                 with gr.Column(scale=1):
-                    test_size_slider = gr.Slider(minimum=0, maximum=0.4, value=0.2, step=0.01, label="Test size")
-                    val_size_slider = gr.Slider(minimum=0, maximum=0.4, value=0.2, step=0.01, label="Validation size")
-                    batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64])
+                    test_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Test size")
+                    val_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Validation size")
+                    batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64, 128, 256, 512])
                     random_seed_slider = gr.Slider(minimum=0, maximum=1000, value=0, step=1, label="Random seed")
                     process_data_button = gr.Button(value="Process data")
                     process_data_markdown = gr.Markdown()

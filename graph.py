@@ -1,7 +1,7 @@
 import os
+import time
 import gradio as gr
 from gradio_molecule2d import molecule2d
-from gradio_molecule3d import Molecule3D
 import numpy as np
 import pandas as pd
 from rdkit import Chem
@@ -10,9 +10,10 @@ import deepchem as dc
 import networkx as nx
 import plotly.express as px
 import plotly.graph_objects as go
+import nglview
 
 def on_create_molecule(molecule_editor: molecule2d):
-    file_path = '.\\molecule.pdb'
+    file_path = './molecule.pdb'
     try:
         mol = Chem.MolFromSmiles(molecule_editor)
         mol = Chem.AddHs(mol)
@@ -20,11 +21,22 @@ def on_create_molecule(molecule_editor: molecule2d):
         AllChem.UFFOptimizeMolecule(mol, maxIters=200)
 
         Chem.MolToPDBFile(mol, file_path)
+
+        # Create the NGL view widget
+        view = nglview.show_rdkit(mol)
+        
+        # Write the widget to HTML
+        if os.path.exists('./Static/molecule.html'):
+            os.remove('./Static/molecule.html')
+        nglview.write_html('./Static/molecule.html', [view])
+
+        # Read the HTML file
+        timestamp = int(time.time())
+        html = f'<iframe src="/Static/molecule.html?ts={timestamp}" height="400" width="600" title="NGL View"></iframe>'
     except:
         return None, None
     
-    create_graph_button = gr.Button(value="Create graph", interactive=True)
-    return file_path, create_graph_button
+    return html, gr.update(interactive=True)
 
 def on_create_graph(smiles: gr.Textbox, featurizer_name: gr.Dropdown):
     # Extract the SMILES string from the event
@@ -147,20 +159,6 @@ def edge_index_to_adj(edge_index, num_nodes):
     adj[edge_index[0], edge_index[1]] = 1
     return adj
 
-reps = [
-    {
-      "model": 0,
-      "chain": "",
-      "resname": "",
-      "style": "stick",
-      "color": "whiteCarbon",
-      "residue_range": "",
-      "around": 0,
-      "byres": False,
-      "visible": False
-    }
-]
-
 def graph_tab_content():
     with gr.Tab("Graph") as graph_tab:
         with gr.Accordion("Molecule"):
@@ -169,7 +167,7 @@ def graph_tab_content():
                     molecule_editor = molecule2d(label="SMILES")
                 with gr.Column(scale=1):
                     create_molecule_button = gr.Button(value="Create molecule")
-                    molecule_viewer = Molecule3D(label="Molecule" , reps=reps)
+                    molecule_viewer = gr.HTML(label="Molecule")
         with gr.Accordion("Graph representation"):
             with gr.Row(equal_height=True):
                 with gr.Column(scale=3):

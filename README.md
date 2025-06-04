@@ -1,17 +1,17 @@
 ## Installation
-You will need [Anaconda](https://www.anaconda.com/download) for this app.
+
 - Clone this repo: Open terminal
 
 ```
 git clone https://github.com/phatdatnguyen/gnn-webui
 ```
 
-- Create and activate Anaconda environment:
+- Create and activate virtual environment:
 
 ```
 cd gnn-webui
-conda create -p ./gnn-env
-conda activate ./gnn-env
+python -m venv gnn-env
+gnn-env\Scripts\activate
 ```
 
 - Install packages:
@@ -19,7 +19,9 @@ conda activate ./gnn-env
 Install [PyTorch](https://pytorch.org/)
 
 ```
-pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+
+pip3 install torch --index-url https://download.pytorch.org/whl/cu128
+
 ```
 
 Install [PyTorch-Geometric](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html)
@@ -42,7 +44,7 @@ pip install ase
 pip install deepchem
 pip install gradio
 pip install gradio_molecule2d
-pip install gradio_molecule3d
+pip install nglview
 pip install plotly
 pip install tabulate
 ```
@@ -51,7 +53,6 @@ pip install tabulate
 To start the web UI:
 
 ```
-conda activate ./gnn-env
-set PYTHONUTF8=1
+gnn-env\Scripts\activate
 python webui.py
 ```

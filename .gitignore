@@ -5,6 +5,8 @@ gnn-env/
 .gradio/
 Datasets/
 Checkpoints/
+Static/
 .vs/
 *.csv
 *.pdb
+*.ipynb

@@ -10,7 +10,7 @@ from matplotlib import pyplot as plt
 from datasets import *
 from models import *
 
-def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, target_column_textbox: gr.Textbox, test_size_slider: gr.Slider, val_size_slider: gr.Slider, batch_size_dropdown: gr.Dropdown, random_seed_slider: gr.Slider):
+def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, target_column_textbox: gr.Textbox, num_conformers_slider:gr.Slider, test_size_slider: gr.Slider, val_size_slider: gr.Slider, batch_size_dropdown: gr.Dropdown, random_seed_slider: gr.Slider):
     # Load dataset
     dataset_file_path = dataset_file
     dataset_name = dataset_name_textbox
@@ -18,7 +18,7 @@ def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, tar
     try:
         # Process the dataset
         global dataset
-        dataset = MoleculeDatasetForBinaryClassification3D(dataset_file_path, dataset_name, target_column)
+        dataset = MoleculeDatasetForBinaryClassification3D(dataset_file_path, dataset_name, target_column, num_conformers_slider)
         
         # Train-validation-test splitting
         test_size = int(len(dataset) * test_size_slider)
@@ -95,15 +95,15 @@ def on_save_checkpoint(model_name_textbox: gr.Textbox):
     checkpoint = {
         'state_dict': model.state_dict()
     }
-    checkpoint_dir = '.\\Checkpoints'
+    checkpoint_dir = './Checkpoints'
     checkpoint_name = f'{model_name_textbox}_{trained_epochs}.ckpt'
     os.makedirs(checkpoint_dir, exist_ok=True)
-    torch.save(checkpoint, checkpoint_dir + '\\' + checkpoint_name)
-    return f'Model was saved to {checkpoint_dir}\\{checkpoint_name}.'
+    torch.save(checkpoint, checkpoint_dir + '/' + checkpoint_name)
+    return f'Model was saved to {checkpoint_dir}/{checkpoint_name}.'
 
 def on_load_checkpoint(checkpoint_path: gr.File):
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint['state_dict'])
+    checkpoint = torch.load(checkpoint_path, weights_only=True)
+    model.load_state_dict(checkpoint['state_dict'], strict=False)
 
     global train_losses
     global val_losses
@@ -211,7 +211,7 @@ def on_export_losses():
     df = pd.DataFrame()
     df['train_losses'] = train_losses
     df['val_losses'] = val_losses
-    file_path = f'.\\{dataset.dataset_name}_{trained_epochs}_losses.csv'
+    file_path = f'./{dataset.dataset_name}_{trained_epochs}_losses.csv'
     df.to_csv(file_path)
     return f'Losses exported to {file_path}.'
 
@@ -260,6 +260,9 @@ def on_evaluate(model_name: gr.Dropdown):
     accuracy = accuracy_score(y_test, y_pred)
     precision = precision_score(y_test, y_pred)
     recall = recall_score(y_test, y_pred)
+    TN = cm[0, 0]  # True Negative
+    FP = cm[0, 1]  # False Positive
+    specificity = TN / (TN + FP)
     f1 = f1_score(y_test, y_pred)
     roc_auc = roc_auc_score(y_test, y_pred)
 
@@ -286,6 +289,10 @@ def on_evaluate(model_name: gr.Dropdown):
                     <td>{:.4f}</td>
                 </tr>
                 <tr>
+                    <td>Specificity</td>
+                    <td>{:.4f}</td>
+                </tr>
+                <tr>
                     <td>F1 score</td>
                     <td>{:.4f}</td>
                 </tr>
@@ -296,7 +303,7 @@ def on_evaluate(model_name: gr.Dropdown):
             </tbody>
         </table>
     </div>
-    """.format(accuracy, precision, recall, f1)
+    """.format(accuracy, precision, recall, specificity, f1, roc_auc)
 
     # Generate ROC curve values
     fpr, tpr, _ = roc_curve(y_test, y_pred)
@@ -322,18 +329,18 @@ def on_export_evaluation():
     df['y_test'] = y_test.tolist()
     df['y_pred'] = y_pred.tolist()
     df['SMILES'] = test_smiles_arr
-    file_path = f'.\\{dataset.dataset_name}_{trained_epochs}_eval.csv'
+    file_path = f'./{dataset.dataset_name}_{trained_epochs}_eval.csv'
     df.to_csv(file_path)
     return f'Evaluation exported to {file_path}.'
 
-def on_process_prediction_data(prediction_dataset_file: gr.File, prediction_dataset_name_textbox: gr.Textbox, batch_size_dropdown: gr.Dropdown):
+def on_process_prediction_data(prediction_dataset_file: gr.File, prediction_dataset_name_textbox: gr.Textbox, num_conformers_slider: gr.Slider, batch_size_dropdown: gr.Dropdown):
     # Load dataset
     dataset_file_path = prediction_dataset_file
     dataset_name = prediction_dataset_name_textbox
     
     # Process the dataset
     global prediction_dataset
-    prediction_dataset = MoleculeDatasetForBinaryClassificationPrediction3D(dataset_file_path, dataset_name)
+    prediction_dataset = MoleculeDatasetForBinaryClassificationPrediction3D(dataset_file_path, dataset_name, num_conformers_slider)
     
     # DataLoaders
     global prediction_dataloader
@@ -376,7 +383,7 @@ def on_predict(gcn_model_name: gr.Dropdown):
     return prediction_df, export_prediction_button
 
 def on_export_prediction():
-    file_path = f'.\\{prediction_dataset.dataset_name}_prediction.csv'
+    file_path = f'./{prediction_dataset.dataset_name}_prediction.csv'
     prediction_df.to_csv(file_path)
     return f'Prediction exported to {file_path}.'
 
@@ -388,10 +395,11 @@ def gnn_binary_classification_3d_tab_content():
                     dataset_file = gr.File(file_types=['.csv'], type='filepath', label="Dataset file")
                     dataset_name_textbox = gr.Textbox(label="Dataset name", placeholder="dataset", value="dataset")
                     target_column_textbox = gr.Textbox(label="Target column")
+                    num_conformers_slider = gr.Slider(minimum=1, maximum=100, value=10, step=1, label="Number of conformers")
                 with gr.Column(scale=1):
-                    test_size_slider = gr.Slider(minimum=0, maximum=0.4, value=0.2, step=0.01, label="Test size")
-                    val_size_slider = gr.Slider(minimum=0, maximum=0.4, value=0.2, step=0.01, label="Validation size")
-                    batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64])
+                    test_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Test size")
+                    val_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Validation size")
+                    batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64, 128, 256, 512])
                     random_seed_slider = gr.Slider(minimum=0, maximum=1000, value=0, step=1, label="Random seed")
                     process_data_button = gr.Button(value="Process data")
                     process_data_markdown = gr.Markdown()
@@ -500,7 +508,7 @@ def gnn_binary_classification_3d_tab_content():
                     with gr.Row(): 
                         prediction_datatable = gr.DataFrame(label="Prediction", wrap=False, interactive=False)
 
-    process_data_button.click(on_process_data, [dataset_file, dataset_name_textbox, target_column_textbox, test_size_slider, val_size_slider, batch_size_dropdown, random_seed_slider],
+    process_data_button.click(on_process_data, [dataset_file, dataset_name_textbox, target_column_textbox, num_conformers_slider, test_size_slider, val_size_slider, batch_size_dropdown, random_seed_slider],
                               [process_data_markdown, create_model_button])
     create_model_button.click(on_create_model, [schnet_n_hiddens, schnet_n_filters, schnet_n_interactions, schnet_n_gaussians, schnet_cutoff, schnet_max_num_neighbors, schnet_readout, schnet_dipole,
                                                 dimenetplusplus_n_hiddens, dimenetplusplus_n_blocks, dimenetplusplus_int_emb_size, dimenetplusplus_basis_emb_size, dimenetplusplus_out_emb_channels, dimenetplusplus_n_spherical, dimenetplusplus_n_radial, dimenetplusplus_cutoff, dimenetplusplus_max_num_neighbors, dimenetplusplus_envelope_exponent, dimenetplusplus_n_output_layers,
@@ -513,7 +521,7 @@ def gnn_binary_classification_3d_tab_content():
     export_losses_button.click(on_export_losses, [], export_losses_markdown)
     evaluate_button.click(on_evaluate, created_model_name_textbox, [evaluation_metrics_html, confusion_matrix_plot, roc_auc_curve_plot, export_evaluation_button])
     export_evaluation_button.click(on_export_evaluation, [], export_evaluation_markdown)
-    process_prediction_data_button.click(on_process_prediction_data, [prediction_dataset_file, prediction_dataset_name_textbox, batch_size_dropdown], process_prediction_data_markdown)
+    process_prediction_data_button.click(on_process_prediction_data, [prediction_dataset_file, prediction_dataset_name_textbox, num_conformers_slider, batch_size_dropdown], process_prediction_data_markdown)
     predict_button.click(on_predict, created_model_name_textbox, [prediction_datatable, export_prediction_button])
     export_prediction_button.click(on_export_prediction, [], export_prediction_markdown)
     

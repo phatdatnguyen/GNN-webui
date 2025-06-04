@@ -127,7 +127,7 @@ class MoleculeDatasetForRegression(Dataset):
         return len(files) - 2
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'))   
+        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'), weights_only=False)   
         return data
     
     @property
@@ -172,10 +172,11 @@ class MoleculeDatasetForRegression(Dataset):
             return 2048
 
 class MoleculeDatasetForRegression3D(Dataset):
-    def __init__(self, data_file_path, dataset_name, target_column, transform=None, pre_transform=None, pre_filter=None):
+    def __init__(self, data_file_path, dataset_name, target_column, num_conformers=1, transform=None, pre_transform=None, pre_filter=None):
         self.dataset_name = dataset_name
         self.data_file_name = os.path.basename(data_file_path)        
         self.target_column = target_column
+        self.num_conformers = num_conformers
         self.output_scaler = MinMaxScaler(feature_range=(0, 1))
         os.makedirs('.\\Datasets', exist_ok=True)
         root = '.\\Datasets\\' + dataset_name # Where the dataset should be stored. This folder is split into 'raw' and 'processed'.
@@ -200,8 +201,8 @@ class MoleculeDatasetForRegression3D(Dataset):
         # Prepare the molecule
         mol = Chem.AddHs(mol)
         
-        # Generate 30 conformers
-        num_confs = 30
+        # Generate conformers
+        num_confs = self.num_conformers
         params = AllChem.ETKDGv3()
         ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
         
@@ -274,7 +275,7 @@ class MoleculeDatasetForRegression3D(Dataset):
         return len(files) - 2
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'))   
+        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'), weights_only=False)   
         return data
 
 class MoleculeDatasetForRegressionPrediction(Dataset):
@@ -386,13 +387,14 @@ class MoleculeDatasetForRegressionPrediction(Dataset):
         return len(files) - 2
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'))   
+        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'), weights_only=False)   
         return data
 
 class MoleculeDatasetForRegressionPrediction3D(Dataset):
-    def __init__(self, data_file_path, dataset_name, transform=None, pre_transform=None, pre_filter=None):
+    def __init__(self, data_file_path, dataset_name, num_conformers=1, transform=None, pre_transform=None, pre_filter=None):
         self.dataset_name = dataset_name
         self.data_file_name = os.path.basename(data_file_path)
+        self.num_conformers = num_conformers
         os.makedirs('.\\Datasets', exist_ok=True)
         root = '.\\Datasets\\' + dataset_name # Where the dataset should be stored. This folder is split into 'raw' and 'processed'.
         os.makedirs(root, exist_ok=True)
@@ -416,8 +418,8 @@ class MoleculeDatasetForRegressionPrediction3D(Dataset):
         # Prepare the molecule
         mol = Chem.AddHs(mol)
         
-        # Generate 30 conformers
-        num_confs = 30
+        # Generate conformers
+        num_confs = self.num_conformers
         params = AllChem.ETKDGv3()
         ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
         
@@ -482,7 +484,7 @@ class MoleculeDatasetForRegressionPrediction3D(Dataset):
         return len(files) - 2
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'))   
+        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'), weights_only=False)   
         return data
 
 class MoleculeDatasetForBinaryClassification(Dataset):
@@ -597,7 +599,7 @@ class MoleculeDatasetForBinaryClassification(Dataset):
         return len(files) - 2
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'))   
+        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'), weights_only=False)   
         return data
     
     @property
@@ -642,10 +644,11 @@ class MoleculeDatasetForBinaryClassification(Dataset):
             return 2048
 
 class MoleculeDatasetForBinaryClassification3D(Dataset):
-    def __init__(self, data_file_path, dataset_name, target_column, transform=None, pre_transform=None, pre_filter=None):
+    def __init__(self, data_file_path, dataset_name, target_column, num_conformers=1, transform=None, pre_transform=None, pre_filter=None):
         self.dataset_name = dataset_name
         self.data_file_name = os.path.basename(data_file_path)        
         self.target_column = target_column
+        self.num_conformers = num_conformers
         os.makedirs('.\\Datasets', exist_ok=True)
         root = '.\\Datasets\\' + dataset_name # Where the dataset should be stored. This folder is split into 'raw' and 'processed'.
         os.makedirs(root, exist_ok=True)
@@ -668,20 +671,37 @@ class MoleculeDatasetForBinaryClassification3D(Dataset):
         
         # Prepare the molecule
         mol = Chem.AddHs(mol)
-        AllChem.EmbedMolecule(mol)
-        AllChem.UFFOptimizeMolecule(mol, maxIters=200)
+
+        # Generate conformers
+        num_confs = self.num_conformers
+        params = AllChem.ETKDGv3()
+        ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
         
-        # Get z and pos
+        # Optimize each conformer and store energies
+        energies = []
+        for conf_id in ids:
+            # Optimize conformer with UFF
+            AllChem.UFFOptimizeMolecule(mol, confId=conf_id, maxIters=200)
+            # Compute energy
+            ff = AllChem.UFFGetMoleculeForceField(mol, confId=conf_id)
+            energy = ff.CalcEnergy()
+            energies.append((conf_id, energy))
+        
+        # Find the conformer with the lowest energy
+        min_conf = min(energies, key=lambda x: x[1])[0]
+        
+        # Get z and pos from the lowest-energy conformer
         z = []
         pos_x = []
         pos_y = []
         pos_z = []
+        conformer = mol.GetConformer(id=min_conf)
         for atom_idx, atom in enumerate(mol.GetAtoms()):
             z.append(atom.GetAtomicNum())
-            atom_pos = mol.GetConformer().GetAtomPosition(atom_idx)
-            pos_x.append(atom_pos[0])
-            pos_y.append(atom_pos[1])
-            pos_z.append(atom_pos[2])
+            atom_pos = conformer.GetAtomPosition(atom_idx)
+            pos_x.append(atom_pos.x)
+            pos_y.append(atom_pos.y)
+            pos_z.append(atom_pos.z)
             
         z = np.array(z)
         pos_x = np.array(pos_x)
@@ -723,7 +743,7 @@ class MoleculeDatasetForBinaryClassification3D(Dataset):
         return len(files) - 2
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'))   
+        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'), weights_only=False)   
         return data
 
 class MoleculeDatasetForBinaryClassificationPrediction(Dataset):
@@ -838,13 +858,14 @@ class MoleculeDatasetForBinaryClassificationPrediction(Dataset):
         return len(files) - 2
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'))   
+        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'), weights_only=False)   
         return data
 
 class MoleculeDatasetForBinaryClassificationPrediction3D(Dataset):
-    def __init__(self, data_file_path, dataset_name, transform=None, pre_transform=None, pre_filter=None):
+    def __init__(self, data_file_path, dataset_name, num_conformers, transform=None, pre_transform=None, pre_filter=None):
         self.dataset_name = dataset_name
         self.data_file_name = os.path.basename(data_file_path)
+        self.num_conformers = num_conformers
         os.makedirs('.\\Datasets', exist_ok=True)
         root = '.\\Datasets\\' + dataset_name # Where the dataset should be stored. This folder is split into 'raw' and 'processed'.
         os.makedirs(root, exist_ok=True)
@@ -867,20 +888,37 @@ class MoleculeDatasetForBinaryClassificationPrediction3D(Dataset):
         
         # Prepare the molecule
         mol = Chem.AddHs(mol)
-        AllChem.EmbedMolecule(mol)
-        AllChem.UFFOptimizeMolecule(mol, maxIters=200)
         
-        # Get z and pos
+        # Generate conformers
+        num_confs = self.num_conformers
+        params = AllChem.ETKDGv3()
+        ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
+        
+        # Optimize each conformer and store energies
+        energies = []
+        for conf_id in ids:
+            # Optimize conformer with UFF
+            AllChem.UFFOptimizeMolecule(mol, confId=conf_id, maxIters=200)
+            # Compute energy
+            ff = AllChem.UFFGetMoleculeForceField(mol, confId=conf_id)
+            energy = ff.CalcEnergy()
+            energies.append((conf_id, energy))
+        
+        # Find the conformer with the lowest energy
+        min_conf = min(energies, key=lambda x: x[1])[0]
+        
+        # Get z and pos from the lowest-energy conformer
         z = []
         pos_x = []
         pos_y = []
         pos_z = []
+        conformer = mol.GetConformer(id=min_conf)
         for atom_idx, atom in enumerate(mol.GetAtoms()):
             z.append(atom.GetAtomicNum())
-            atom_pos = mol.GetConformer().GetAtomPosition(atom_idx)
-            pos_x.append(atom_pos[0])
-            pos_y.append(atom_pos[1])
-            pos_z.append(atom_pos[2])
+            atom_pos = conformer.GetAtomPosition(atom_idx)
+            pos_x.append(atom_pos.x)
+            pos_y.append(atom_pos.y)
+            pos_z.append(atom_pos.z)
             
         z = np.array(z)
         pos_x = np.array(pos_x)
@@ -899,7 +937,6 @@ class MoleculeDatasetForBinaryClassificationPrediction3D(Dataset):
                 z, pos_x, pos_y, pos_z = self.ProcessData3D(smiles)
                 z = torch.tensor(z)
                 pos = torch.tensor(np.array([pos_x, pos_y, pos_z]))
-                output = self.get_output(mol[self.target_column])
 
                 data = Data(z=z, 
                             pos=pos.T,
@@ -917,5 +954,5 @@ class MoleculeDatasetForBinaryClassificationPrediction3D(Dataset):
         return len(files) - 2
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'))   
+        data = torch.load(os.path.join(self.processed_dir, f'{self.dataset_name}_{idx}.pt'), weights_only=False)   
         return data
