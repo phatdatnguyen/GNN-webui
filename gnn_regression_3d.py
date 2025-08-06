@@ -4,44 +4,44 @@ import pandas as pd
 import torch
 import gradio as gr
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import summary
-from torch_geometric.nn.models import SchNet, DimeNetPlusPlus, ViSNet
-from sklearn.preprocessing import MinMaxScaler
+from torch_geometric.nn.models import SchNet, DimeNetPlusPlus, ViSNet, GNNFF
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from matplotlib import pyplot as plt
 from datasets import *
-from models import *
 
 def on_process_data(dataset_file: gr.File, dataset_name_textbox: gr.Textbox, target_column_textbox: gr.Textbox, num_conformers_slider:gr.Slider, test_size_slider: gr.Slider, val_size_slider: gr.Slider, batch_size_dropdown: gr.Dropdown, random_seed_slider: gr.Slider):
-    # Load dataset
-    dataset_file_path = dataset_file
-    dataset_name = dataset_name_textbox
-    target_column = target_column_textbox
-
     try:
-        # Process the dataset
         global dataset
-        dataset = MoleculeDatasetForRegression3D(dataset_file_path, dataset_name, target_column, num_conformers_slider)
-        
-        # Train-validation-test splitting
-        test_size = int(len(dataset) * test_size_slider)
-        val_size = int(len(dataset) * val_size_slider)
-        train_size = len(dataset) - test_size - val_size
-        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=torch.Generator().manual_seed(random_seed_slider))
+        dataset = MoleculeDatasetForRegression3D(
+            dataset_file,
+            dataset_name_textbox,
+            target_column_textbox,
+            num_conformers_slider
+        )
 
-        # DataLoaders
-        global train_dataloader
-        global test_dataloader
-        global val_dataloader
-        train_dataloader = DataLoader(train_dataset, batch_size=batch_size_dropdown)
-        test_dataloader = DataLoader(test_dataset, batch_size=batch_size_dropdown)
-        val_dataloader = DataLoader(val_dataset, batch_size=batch_size_dropdown)
+        total_len = len(dataset)
+        test_size = int(total_len * test_size_slider)
+        val_size = int(total_len * val_size_slider)
+        train_size = total_len - test_size - val_size
+
+        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
+            dataset,
+            [train_size, val_size, test_size],
+            generator=torch.Generator().manual_seed(random_seed_slider)
+        )
+
+        batch_size = int(batch_size_dropdown)
+        global train_dataloader, test_dataloader, val_dataloader
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size)
+        test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
+        val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
+
+        create_model_button = gr.Button(value="Create model", interactive=True)
+        return f"Data processed: {total_len} molecules.", create_model_button
+
     except Exception as exc:
-        gr.Warning("Error!\n" + str(exc.args))
+        gr.Warning(f"Error!\n{exc}")
         return None, None
-    
-    create_model_button = gr.Button(value="Create model", interactive=True)
-    return f"Data processed: {len(dataset)} molecules.",create_model_button
 
 gnn_model_tab = "SchNet"
 def on_gnn_model_tab_selected(evt: gr.SelectData):
@@ -61,37 +61,68 @@ def on_create_model(schnet_n_hiddens: gr.Dropdown, schnet_n_filters: gr.Dropdown
         torch.cuda.manual_seed(random_seed_slider)
 
     global model
-
+    model = None
     if gnn_model_tab == "SchNet":
-        model = SchNet(hidden_channels=schnet_n_hiddens, num_filters=schnet_n_filters, num_interactions=schnet_n_interactions, 
-               num_gaussians=schnet_n_gaussians, cutoff=schnet_cutoff, max_num_neighbors=schnet_max_num_neighbors,
-               readout=schnet_readout, dipole=schnet_dipole).float().to(device)
+        model = SchNet(
+            hidden_channels=schnet_n_hiddens,
+            num_filters=schnet_n_filters,
+            num_interactions=schnet_n_interactions,
+            num_gaussians=schnet_n_gaussians,
+            cutoff=schnet_cutoff,
+            max_num_neighbors=schnet_max_num_neighbors,
+            readout=schnet_readout,
+            dipole=schnet_dipole
+        ).float().to(device)
     elif gnn_model_tab == "DimeNet++":
-        model = DimeNetPlusPlus(hidden_channels=dimenetplusplus_n_hiddens, out_channels=1, num_blocks=dimenetplusplus_n_blocks,
-                        int_emb_size=dimenetplusplus_int_emb_size, basis_emb_size=dimenetplusplus_basis_emb_size,
-                        out_emb_channels=dimenetplusplus_out_emb_channels, num_spherical=dimenetplusplus_n_spherical,
-                        num_radial=dimenetplusplus_n_radial, cutoff=dimenetplusplus_cutoff,
-                        max_num_neighbors=dimenetplusplus_max_num_neighbors, envelope_exponent=dimenetplusplus_envelope_exponent,
-                        num_output_layers=dimenetplusplus_n_output_layers).float().to(device)
+        model = DimeNetPlusPlus(
+            hidden_channels=dimenetplusplus_n_hiddens,
+            out_channels=1,
+            num_blocks=dimenetplusplus_n_blocks,
+            int_emb_size=dimenetplusplus_int_emb_size,
+            basis_emb_size=dimenetplusplus_basis_emb_size,
+            out_emb_channels=dimenetplusplus_out_emb_channels,
+            num_spherical=dimenetplusplus_n_spherical,
+            num_radial=dimenetplusplus_n_radial,
+            cutoff=dimenetplusplus_cutoff,
+            max_num_neighbors=dimenetplusplus_max_num_neighbors,
+            envelope_exponent=dimenetplusplus_envelope_exponent,
+            num_output_layers=dimenetplusplus_n_output_layers
+        ).float().to(device)
     elif gnn_model_tab == "ViSNet":
-        model = ViSNet(num_heads=visnet_n_heads, num_layers=visnet_n_layers, hidden_channels=visnet_n_hiddens, num_rbf=visnet_num_rbf,
-                       trainable_rbf=visnet_trainable_rbf, max_z=visnet_max_z, cutoff=visnet_cutoff, max_num_neighbors=visnet_max_num_neighbors,
-                       vertex=visnet_vertex).float().to(device)
-    
-    global train_losses
-    global val_losses
-    global trained_epochs
+        model = ViSNet(
+            num_heads=visnet_n_heads,
+            num_layers=visnet_n_layers,
+            hidden_channels=visnet_n_hiddens,
+            num_rbf=visnet_num_rbf,
+            trainable_rbf=visnet_trainable_rbf,
+            max_z=visnet_max_z,
+            cutoff=visnet_cutoff,
+            max_num_neighbors=visnet_max_num_neighbors,
+            vertex=visnet_vertex
+        ).float().to(device)
+
+    # Reset training state
+    global train_losses, val_losses, trained_epochs
     train_losses = []
     val_losses = []
     trained_epochs = 0
 
+    # Create interactive buttons
     save_checkpoint_button = gr.Button(value="Save checkpoint", interactive=True)
     load_checkpoint_button = gr.Button(value="Load checkpoint", interactive=True)
     create_optimizer_button = gr.Button(value="Create optimizer", interactive=True)
     evaluate_button = gr.Button(value="Evaluate", interactive=True)
     predict_button = gr.Button(value="Predict", interactive=True)
 
-    return gnn_model_tab, f'Model created: {gnn_model_tab}.', save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, predict_button
+    return (
+        gnn_model_tab,
+        f'Model created: {gnn_model_tab}.',
+        save_checkpoint_button,
+        load_checkpoint_button,
+        create_optimizer_button,
+        evaluate_button,
+        predict_button
+    )
 
 trained_epochs = 0
 def on_save_checkpoint(model_name_textbox: gr.Textbox):
@@ -108,9 +139,7 @@ def on_load_checkpoint(checkpoint_path: gr.File):
     checkpoint = torch.load(checkpoint_path, weights_only=False)
     model.load_state_dict(checkpoint['state_dict'])
 
-    global train_losses
-    global val_losses
-    global trained_epochs
+    global train_losses, val_losses, trained_epochs
     train_losses = []
     val_losses = []
     trained_epochs = 0
@@ -119,95 +148,86 @@ def on_load_checkpoint(checkpoint_path: gr.File):
 
 loss_fn = torch.nn.MSELoss()
 def on_create_optimizer(optimizer_dropdown: gr.Dropdown, learning_rate_slider: gr.Slider, learning_rate_decay_slider: gr.Slider):
-    global optimizer
-    if optimizer_dropdown == "Adam":
-        optimizer = optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate_slider)
-    elif optimizer_dropdown == "AdamW":
-        optimizer = optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate_slider)
-    elif optimizer_dropdown == "SGD":
-        optimizer = optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate_slider)
-        
-    global scheduler
+    global optimizer, scheduler, train_losses, val_losses, trained_epochs
+    opt_map = {
+        "Adam": torch.optim.Adam,
+        "AdamW": torch.optim.AdamW,
+        "SGD": torch.optim.SGD
+    }
+    optimizer_cls = opt_map.get(optimizer_dropdown)
+    if optimizer_cls is None:
+        gr.Warning(f"Unknown optimizer: {optimizer_dropdown}")
+        return None, None
+    optimizer = optimizer_cls(model.parameters(), lr=learning_rate_slider)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=learning_rate_decay_slider)
-
-    global train_losses
-    global val_losses
-    global trained_epochs
-    train_losses = []
-    val_losses = []
-    trained_epochs = 0
-
+    train_losses, val_losses, trained_epochs = [], [], 0
     train_button = gr.Button(value="Train", interactive=True)
-
     return "Optimizer created.", train_button
 
 # Define the train function
 def train(dataloader, model_name):
-    total_loss = 0
-    batch_index = 0
+    total_loss = 0.0
+    num_batches = 0
     model.train()
     for batch in dataloader:
         z = batch.z.long().to(device)
         pos = batch.pos.float().to(device)
         y = batch.y.float().to(device)
-        if model_name == "SchNet" or model_name == "DimeNet++":
+        # print(batch.batch)  # Remove or comment out for cleaner output
+        if model_name in ("SchNet", "DimeNet++"):
             output = model(z, pos, batch.batch.to(device))
-        else: # nn_model_name == "ViSNet"
+        else:  # ViSNet
             output, _ = model(z, pos, batch.batch.to(device))
         loss = loss_fn(output, y)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        total_loss += torch.sqrt(loss).cpu().detach().item()
-        batch_index += 1
-    return total_loss / (batch_index + 1)
+        total_loss += torch.sqrt(loss).item()
+        num_batches += 1
+    return total_loss / num_batches if num_batches > 0 else float('nan')
 
 # Define the validation function
 @torch.no_grad()
 def validation(dataloader, model_name):
-    total_loss = 0
-    batch_index = 0
+    total_loss = 0.0
+    num_batches = 0
     model.eval()
     for batch in dataloader:
         z = batch.z.long().to(device)
         pos = batch.pos.float().to(device)
         y = batch.y.float().to(device)
-        with torch.no_grad():
-            if model_name == "SchNet" or model_name == "DimeNet++":
-                output = model(z, pos, batch.batch.to(device))
-            else: # nn_model_name == "ViSNet"
-                output, _ = model(z, pos, batch.batch.to(device))
-            loss = loss_fn(output, y)
-            total_loss += torch.sqrt(loss).cpu().detach().item()
-        batch_index += 1
-    return total_loss / (batch_index + 1)
+        if model_name in ("SchNet", "DimeNet++"):
+            output = model(z, pos, batch.batch.to(device))
+        else:  # ViSNet
+            output, _ = model(z, pos, batch.batch.to(device))
+        loss = loss_fn(output, y)
+        total_loss += torch.sqrt(loss).item()
+        num_batches += 1
+    return total_loss / num_batches if num_batches > 0 else float('nan')
 
 def on_train(epochs_slider: gr.Slider, created_model_name: gr.Textbox, progress=gr.Progress()):
     global trained_epochs
-    epochs = epochs_slider
-    t = progress.tqdm(range(trained_epochs+1, epochs+trained_epochs+1), total=epochs, desc="Training")
-    for epoch in t:
+    epochs = int(epochs_slider)
+    t = progress.tqdm(range(trained_epochs + 1, trained_epochs + epochs + 1), total=epochs, desc="Training")
+    for _ in t:
         train_loss = train(train_dataloader, created_model_name)
         train_losses.append(train_loss)
-        
         val_loss = validation(val_dataloader, created_model_name)
         val_losses.append(val_loss)
-        
         scheduler.step()
         trained_epochs += 1
 
-        # Plot the training loss
-        figure = plt.figure(figsize=(10, 5))
-        plt.plot(train_losses, label='Train loss')
-        plt.plot(val_losses, label='Validation loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('MSE loss')
-        plt.legend()
-        plt.grid(True)
-        plt.close()
-    
-    export_losses_button = gr.Button(value="Export", interactive=True)
+    # Plot the training and validation loss
+    figure = plt.figure(figsize=(10, 5))
+    plt.plot(train_losses, label='Train loss')
+    plt.plot(val_losses, label='Validation loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('MSE loss')
+    plt.legend()
+    plt.grid(True)
+    plt.close()
 
+    export_losses_button = gr.Button(value="Export", interactive=True)
     return figure, export_losses_button
 
 def on_export_losses():
@@ -221,87 +241,58 @@ def on_export_losses():
 # Define the test function
 @torch.no_grad()
 def test(dataloader, model_name):
-    batch_index = 0
     model.eval()
-    y_test = torch.tensor([])
-    y_pred = torch.tensor([])
+    y_test_list = []
+    y_pred_list = []
     smiles_arr = []
     for batch in dataloader:
         z = batch.z.long().to(device)
         pos = batch.pos.float().to(device)
         y = batch.y.float().to(device)
         smiles = batch.smiles
-        with torch.no_grad():
-            if model_name == "SchNet" or model_name == "DimeNet++":
-                output = model(z, pos, batch.batch.to(device))
-            else: # nn_model_name == "ViSNet"
-                output, _ = model(z, pos, batch.batch.to(device))
-            y_test = torch.cat((y_test, y.cpu().detach()), dim=0)
-            y_pred = torch.cat((y_pred, output.cpu().detach()), dim=0)
-            smiles_arr.extend(smiles)
-        batch_index += 1
+        if model_name in ("SchNet", "DimeNet++"):
+            output = model(z, pos, batch.batch.to(device))
+        else:  # ViSNet
+            output, _ = model(z, pos, batch.batch.to(device))
+        y_test_list.append(y.cpu())
+        y_pred_list.append(output.cpu().detach())
+        smiles_arr.extend(smiles)
+    y_test = torch.cat(y_test_list, dim=0) if y_test_list else torch.tensor([])
+    y_pred = torch.cat(y_pred_list, dim=0) if y_pred_list else torch.tensor([])
     return y_test, y_pred, smiles_arr
 
 def on_evaluate(created_model_name: gr.Textbox):
-    # Get the output scaler
     output_scaler = dataset.output_scaler
-    
-    # Run the model forward to get the test result
-    global test_smiles_arr
+    global test_smiles_arr, y_test, y_pred
     y_test_scaled, y_pred_scaled, test_smiles_arr = test(test_dataloader, created_model_name)
-
-    # Scale the outputs back to the original range
-    global y_test
-    global y_pred
-    y_test = output_scaler.inverse_transform(y_test_scaled.reshape(-1,1)).reshape(-1)
-    y_pred = output_scaler.inverse_transform(y_pred_scaled.reshape(-1,1)).reshape(-1)
-
-    # Evaluate the model using different metrics
+    y_test = output_scaler.inverse_transform(y_test_scaled.reshape(-1, 1)).reshape(-1)
+    y_pred = output_scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1)
     mae = mean_absolute_error(y_test, y_pred)
     mse = mean_squared_error(y_test, y_pred)
     rmse = math.sqrt(mse)
     r2 = r2_score(y_test, y_pred)
-    html = """
+    html = f"""
     <div>
         <table>
             <thead>
-                <tr>
-                    <td><b>Metric</b></td>
-                    <td><b>Value</b></td>
-                </tr>
+                <tr><td><b>Metric</b></td><td><b>Value</b></td></tr>
             </thead>
             <tbody>
-                <tr>
-                    <td>Mean absolute error</td>
-                    <td>{:.4f}</td>
-                </tr>
-                <tr>
-                    <td>Mean squared error</td>
-                    <td>{:.4f}</td>
-                </tr>
-                <tr>
-                    <td>Root mean squared error</td>
-                    <td>{:.4f}</td>
-                </tr>
-                <tr>
-                    <td>Coefficient of determination</td>
-                    <td>{:.4f}</td>
-                </tr>
+                <tr><td>Mean absolute error</td><td>{mae:.4f}</td></tr>
+                <tr><td>Mean squared error</td><td>{mse:.4f}</td></tr>
+                <tr><td>Root mean squared error</td><td>{rmse:.4f}</td></tr>
+                <tr><td>Coefficient of determination</td><td>{r2:.4f}</td></tr>
             </tbody>
         </table>
     </div>
-    """.format(mae, mse, rmse, r2)
-
-    # Visualization
+    """
     scatter_plot = plt.figure(figsize=(8, 8))
     plt.scatter(y_test, y_pred)
     plt.xlabel('actual value')
     plt.ylabel('predicted value')
     plt.grid(True)
     plt.close()
-
     export_scatter_plot_button = gr.Button(value="Export", interactive=True)
-
     return [html, scatter_plot, export_scatter_plot_button]
 
 def on_export_scatter_plot():
@@ -314,56 +305,48 @@ def on_export_scatter_plot():
     return f'Scatter plot exported to {file_path}.'
 
 def on_process_prediction_data(prediction_dataset_file: gr.File, prediction_dataset_name_textbox: gr.Textbox, num_conformers_slider: gr.Slider, batch_size_dropdown: gr.Dropdown):
-    # Load dataset
-    dataset_file_path = prediction_dataset_file
-    dataset_name = prediction_dataset_name_textbox
-    
-    # Process the dataset
-    global prediction_dataset
-    prediction_dataset = MoleculeDatasetForRegressionPrediction3D(dataset_file_path, dataset_name, num_conformers_slider)
-    
-    # DataLoaders
-    global prediction_dataloader
-    prediction_dataloader = DataLoader(prediction_dataset, batch_size=batch_size_dropdown)
-
-    return f'Data processed: {len(prediction_dataset)} molecules.'
+    try:
+        global prediction_dataset, prediction_dataloader
+        prediction_dataset = MoleculeDatasetForRegressionPrediction3D(
+            prediction_dataset_file,
+            prediction_dataset_name_textbox,
+            num_conformers_slider
+        )
+        batch_size = int(batch_size_dropdown)
+        prediction_dataloader = DataLoader(prediction_dataset, batch_size=batch_size)
+        return f'Data processed: {len(prediction_dataset)} molecules.'
+    except Exception as exc:
+        gr.Warning(f"Error!\n{exc}")
+        return None
 
 # Define the predict function
 @torch.no_grad()
 def predict(dataloader, model_name):
     model.eval()
     smiles_list = []
-    y_pred = torch.tensor([])
+    y_pred_list = []
     for batch in dataloader:
         smiles_list.extend(batch.smiles)
         z = batch.z.long().to(device)
         pos = batch.pos.float().to(device)
-        with torch.no_grad():
-            if model_name == "SchNet" or model_name == "DimeNet++":
-                output = model(z, pos, batch.batch.to(device))
-            else: # nn_model_name == "ViSNet"
-                output, _ = model(z, pos, batch.batch.to(device))
-            y_pred = torch.cat((y_pred, output.cpu().detach()), dim=0)
-
+        if model_name in ("SchNet", "DimeNet++"):
+            output = model(z, pos, batch.batch.to(device))
+        else:  # ViSNet
+            output, _ = model(z, pos, batch.batch.to(device))
+        y_pred_list.append(output.cpu().detach())
+    y_pred = torch.cat(y_pred_list, dim=0) if y_pred_list else torch.tensor([])
     return smiles_list, y_pred
 
 def on_predict(created_model_name: gr.Textbox):
-    # Get the output scaler
     output_scaler = dataset.output_scaler
-    
-    # Run the model forward to get the test result
     smiles_list, y_pred_scaled = predict(prediction_dataloader, created_model_name)
-
-    # Scale the outputs back to the original range
     y_pred = output_scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1)
-
     global prediction_df
-    prediction_df = pd.DataFrame()
-    prediction_df['smiles'] = smiles_list
-    prediction_df[dataset.target_column] = y_pred.tolist()
-    
+    prediction_df = pd.DataFrame({
+        'SMILES': smiles_list,
+        dataset.target_column: y_pred.tolist()
+    })
     export_prediction_button = gr.Button(value="Export", interactive=True)
-
     return prediction_df, export_prediction_button
 
 def on_export_prediction():
@@ -372,7 +355,7 @@ def on_export_prediction():
     return f'Prediction exported to {file_path}.'
 
 def gnn_regression_3d_tab_content():
-    with gr.Tab("3D GNN for Regression") as gnn_regression_3d_tab:
+    with gr.Tab("3D GNN Models for Regression") as gnn_regression_3d_tab:
         with gr.Accordion("Dataset"):
             with gr.Row(equal_height=True):
                 with gr.Column(scale=1):

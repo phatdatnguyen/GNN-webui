@@ -2,9 +2,9 @@ import os
 import glob
 import gradio as gr
 from graph import graph_tab_content
-from gnn_regression import gnn_regression_tab_content
+from gnn_regression_hybrid import hybrid_gnn_regression_tab_content
 from gnn_regression_3d import gnn_regression_3d_tab_content
-from gnn_binary_classification import gnn_binary_classification_tab_content
+from gnn_binary_classification_hybrid import hybrid_gnn_binary_classification_tab_content
 from gnn_binary_classification_3d import gnn_binary_classification_3d_tab_content
 from pathlib import Path
 from fastapi import FastAPI
@@ -38,12 +38,12 @@ def find_available_port(start_port=7860):
 
 available_port = find_available_port()
 
-with gr.Blocks(css='styles.css') as blocks:
+with gr.Blocks(css='./styles.css') as blocks:
     with gr.Tabs() as tabs:
         graph_tab_content()
-        gnn_regression_tab_content()
+        hybrid_gnn_regression_tab_content()
         gnn_regression_3d_tab_content()
-        gnn_binary_classification_tab_content()
+        hybrid_gnn_binary_classification_tab_content()
         gnn_binary_classification_3d_tab_content()
 
 # mount Gradio app to FastAPI app

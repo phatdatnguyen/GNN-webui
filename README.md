@@ -42,8 +42,7 @@ pip install mordred
 pip install tensorflow
 pip install ase
 pip install deepchem
-pip install gradio
-pip install gradio_molecule2d
+pip install gradio==5.29.1
 pip install nglview
 pip install plotly
 pip install tabulate
@@ -53,6 +52,5 @@ pip install tabulate
 To start the web UI:
 
 ```
-gnn-env\Scripts\activate
-python webui.py
+start_webui
 ```
