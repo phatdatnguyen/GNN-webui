@@ -1,3 +1,10 @@
+## Introduction
+
+A Gradio web app for molecular property prediction with graph neural networks (GNNs).
+
+![Image](./Images/WebUI01.png)
+
+
 ## Installation
 
 - Clone this repo: Open terminal
