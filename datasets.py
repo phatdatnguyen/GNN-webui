@@ -56,28 +56,30 @@ class MoleculeDatasetForRegressionHybrid(Dataset):
         gcn_featurizer = self._get_gcn_featurizer()
         mol_featurizer = self._get_mol_featurizer()
         mol_features_list = []
-        for graph_index, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
+        graph_index = 0
+        for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
-                mol_obj = Chem.MolFromSmiles(mol['SMILES'])
+                mol_obj = Chem.MolFromSmiles(row['SMILES'])
                 mol_obj = Chem.AddHs(mol_obj)
                 gcn_features = gcn_featurizer.featurize(mol_obj)
                 node_feats = torch.tensor(np.array(gcn_features[0].node_features))
                 self.n_gcn_features = node_feats.shape[1]
                 edge_index = torch.tensor(np.array(gcn_features[0].edge_index))
                 edge_attr = torch.tensor(np.array(gcn_features[0].edge_features))
-                mol_features = self._featurize_molecule(mol_obj, mol['SMILES'], mol_featurizer)
+                mol_features = self._featurize_molecule(mol_obj, row['SMILES'], mol_featurizer)
                 mol_features_list.append(mol_features.reshape(-1))
                 mol_features_tensor = torch.tensor(mol_features)
                 self.n_mol_features = mol_features_tensor.shape[1]
-                output = self.get_output(mol[self.target_column])
+                output = self.get_output(row[self.target_column])
 
                 data = Data(x=node_feats,
                             edge_index=edge_index,
                             edge_attr=edge_attr,
                             y=output,
-                            smiles=mol['SMILES'],
+                            smiles=row['SMILES'],
                             mol_features=mol_features_tensor)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
+                graph_index += 1
             except Exception:
                 continue
         mol_features_arr = np.array(mol_features_list)
@@ -211,16 +213,17 @@ class MoleculeDatasetForRegressionPredictionHybrid(Dataset):
         gcn_featurizer = self._get_gcn_featurizer()
         mol_featurizer = self._get_mol_featurizer()
         mol_features_list = []
-        for graph_index, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
+        graph_index = 0
+        for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
-                mol_obj = Chem.MolFromSmiles(mol['SMILES'])
+                mol_obj = Chem.MolFromSmiles(row['SMILES'])
                 mol_obj = Chem.AddHs(mol_obj)
                 gcn_features = gcn_featurizer.featurize(mol_obj)
                 node_feats = torch.tensor(np.array(gcn_features[0].node_features))
                 self.n_gcn_features = node_feats.shape[1]
                 edge_index = torch.tensor(np.array(gcn_features[0].edge_index))
                 edge_attr = torch.tensor(np.array(gcn_features[0].edge_features))
-                mol_features = self._featurize_molecule(mol_obj, mol['SMILES'], mol_featurizer)
+                mol_features = self._featurize_molecule(mol_obj, row['SMILES'], mol_featurizer)
                 mol_features_list.append(mol_features.reshape(-1))
                 mol_features_tensor = torch.tensor(mol_features)
                 self.n_mol_features = mol_features_tensor.shape[1]
@@ -228,9 +231,10 @@ class MoleculeDatasetForRegressionPredictionHybrid(Dataset):
                 data = Data(x=node_feats,
                             edge_index=edge_index,
                             edge_attr=edge_attr,
-                            smiles=mol['SMILES'],
+                            smiles=row['SMILES'],
                             mol_features=mol_features_tensor)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
+                graph_index += 1
             except Exception:
                 continue
         mol_features_arr = np.array(mol_features_list)
@@ -314,14 +318,16 @@ class MoleculeDatasetForRegression3D(Dataset):
 
         if len(os.listdir(self.processed_dir)) > 2:
             return
-
-        for graph_index, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
+        
+        graph_index = 0
+        for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
-                smiles = mol["smiles"]
+                smiles = row["SMILES"]
                 z, pos = self._process_3d(smiles)
-                output = self.get_output(mol[self.target_column])
-                data = Data(z=z, pos=pos, smiles=mol["smiles"], y=output)
+                output = self.get_output(row[self.target_column])
+                data = Data(z=z, pos=pos, smiles=row["SMILES"], y=output)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
+                graph_index += 1
             except Exception:
                 continue
 
@@ -380,12 +386,14 @@ class MoleculeDatasetForRegressionPrediction3D(Dataset):
 
         data_path = os.path.join('./Datasets', self.dataset_name, 'raw', self.data_file_name)
         self.data = pd.read_csv(data_path)
-        for graph_index, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
+        graph_index = 0
+        for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
-                smiles = mol["smiles"]
+                smiles = row["SMILES"]
                 z, pos = self._process_3d(smiles)
-                data = Data(z=z, pos=pos, smiles=mol["smiles"])
+                data = Data(z=z, pos=pos, smiles=row["SMILES"])
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
+                graph_index += 1
             except Exception:
                 continue
 
@@ -456,7 +464,8 @@ class MoleculeDatasetForBinaryClassificationHybrid(Dataset):
         gcn_featurizer = self._get_gcn_featurizer()
         mol_featurizer = self._get_mol_featurizer()
         mol_features_list = []
-        for graph_index, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
+        graph_index = 0
+        for _, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
                 mol_obj = Chem.MolFromSmiles(mol['SMILES'])
                 mol_obj = Chem.AddHs(mol_obj)
@@ -478,6 +487,7 @@ class MoleculeDatasetForBinaryClassificationHybrid(Dataset):
                             smiles=mol['SMILES'],
                             mol_features=mol_features_tensor)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
+                graph_index += 1
             except Exception:
                 continue
         mol_features_arr = np.array(mol_features_list)
@@ -608,16 +618,17 @@ class MoleculeDatasetForBinaryClassificationPredictionHybrid(Dataset):
         gcn_featurizer = self._get_gcn_featurizer()
         mol_featurizer = self._get_mol_featurizer()
         mol_features_list = []
-        for graph_index, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
+        graph_index = 0
+        for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
-                mol_obj = Chem.MolFromSmiles(mol['SMILES'])
+                mol_obj = Chem.MolFromSmiles(row['SMILES'])
                 mol_obj = Chem.AddHs(mol_obj)
                 gcn_features = gcn_featurizer.featurize(mol_obj)
                 node_feats = torch.tensor(np.array(gcn_features[0].node_features))
                 self.n_gcn_features = node_feats.shape[1]
                 edge_index = torch.tensor(np.array(gcn_features[0].edge_index))
                 edge_attr = torch.tensor(np.array(gcn_features[0].edge_features))
-                mol_features = self._featurize_molecule(mol_obj, mol['SMILES'], mol_featurizer)
+                mol_features = self._featurize_molecule(mol_obj, row['SMILES'], mol_featurizer)
                 mol_features_list.append(mol_features.reshape(-1))
                 mol_features_tensor = torch.tensor(mol_features)
                 self.n_mol_features = mol_features_tensor.shape[1]
@@ -625,9 +636,10 @@ class MoleculeDatasetForBinaryClassificationPredictionHybrid(Dataset):
                 data = Data(x=node_feats,
                             edge_index=edge_index,
                             edge_attr=edge_attr,
-                            smiles=mol['SMILES'],
+                            smiles=row['SMILES'],
                             mol_features=mol_features_tensor)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
+                graph_index += 1
             except Exception:
                 continue
         mol_features_arr = np.array(mol_features_list)
@@ -716,13 +728,15 @@ class MoleculeDatasetForBinaryClassification3D(Dataset):
         if len(os.listdir(self.processed_dir)) > 2:
             return
 
-        for graph_index, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
+        graph_index = 0
+        for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
-                smiles = mol["smiles"]
+                smiles = row["SMILES"]
                 z, pos = self._process_3d(smiles)
-                output = self.get_output(mol[self.target_column])
-                data = Data(z=z, pos=pos, smiles=mol["smiles"], y=output)
+                output = self.get_output(row[self.target_column])
+                data = Data(z=z, pos=pos, smiles=row["SMILES"], y=output)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
+                graph_index += 1
             except Exception:
                 continue
 
@@ -781,12 +795,15 @@ class MoleculeDatasetForBinaryClassificationPrediction3D(Dataset):
 
         data_path = os.path.join('./Datasets', self.dataset_name, 'raw', self.data_file_name)
         self.data = pd.read_csv(data_path)
-        for graph_index, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
+
+        graph_index = 0
+        for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
-                smiles = mol["smiles"]
+                smiles = row["SMILES"]
                 z, pos = self._process_3d(smiles)
-                data = Data(z=z, pos=pos, smiles=mol["smiles"])
+                data = Data(z=z, pos=pos, smiles=row["SMILES"])
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
+                graph_index += 1
             except Exception:
                 continue
 
