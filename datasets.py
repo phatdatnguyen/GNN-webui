@@ -84,6 +84,9 @@ class MoleculeDatasetForRegressionHybrid(Dataset):
                 continue
         mol_features_arr = np.array(mol_features_list)
         np.savetxt(os.path.join('./Datasets', self.dataset_name, 'raw', 'mol_features.csv'), mol_features_arr, delimiter=',')
+        if self.dimensionality_reduction:
+            mol_features_arr = self.variance_threshold.fit_transform(mol_features_arr)
+            mol_features_arr = self.pca.fit_transform(mol_features_arr)
         self.mol_features_scaler.fit(mol_features_arr)
 
     def _get_gcn_featurizer(self):
@@ -239,6 +242,9 @@ class MoleculeDatasetForRegressionPredictionHybrid(Dataset):
                 continue
         mol_features_arr = np.array(mol_features_list)
         np.savetxt(os.path.join('./Datasets', self.train_dataset_name, 'raw', 'mol_features.csv'), mol_features_arr, delimiter=',')
+        if self.dimensionality_reduction:
+            mol_features_arr = self.variance_threshold.fit_transform(mol_features_arr)
+            mol_features_arr = self.pca.fit_transform(mol_features_arr)
         self.mol_features_scaler.fit(mol_features_arr)
 
     def _get_gcn_featurizer(self):
@@ -492,6 +498,9 @@ class MoleculeDatasetForBinaryClassificationHybrid(Dataset):
                 continue
         mol_features_arr = np.array(mol_features_list)
         np.savetxt(os.path.join('./Datasets', self.dataset_name, 'raw', 'mol_features.csv'), mol_features_arr, delimiter=',')
+        if self.dimensionality_reduction:
+            mol_features_arr = self.variance_threshold.fit_transform(mol_features_arr)
+            mol_features_arr = self.pca.fit_transform(mol_features_arr)
         self.mol_features_scaler.fit(mol_features_arr)
 
     def _get_gcn_featurizer(self):
@@ -644,6 +653,9 @@ class MoleculeDatasetForBinaryClassificationPredictionHybrid(Dataset):
                 continue
         mol_features_arr = np.array(mol_features_list)
         np.savetxt(os.path.join('./Datasets', self.train_dataset_name, 'raw', 'mol_features.csv'), mol_features_arr, delimiter=',')
+        if self.dimensionality_reduction:
+            mol_features_arr = self.variance_threshold.fit_transform(mol_features_arr)
+            mol_features_arr = self.pca.fit_transform(mol_features_arr)
         self.mol_features_scaler.fit(mol_features_arr)
 
     def _get_gcn_featurizer(self):

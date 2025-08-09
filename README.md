@@ -46,6 +46,8 @@ pip install mordred
 pip install tensorflow
 pip install ase
 pip install deepchem
+pip install gradio_molecule2d
+pip uninstall gradio
 pip install gradio==5.29.1
 pip install nglview
 pip install plotly
