@@ -5,7 +5,7 @@ import pandas as pd
 from tqdm import tqdm
 from rdkit import Chem
 from rdkit.Avalon import pyAvalonTools
-from rdkit.Chem import AllChem, rdFingerprintGenerator, rdmolops
+from rdkit.Chem import AllChem, SaltRemover, rdFingerprintGenerator, rdmolops
 import deepchem as dc
 import torch
 from sklearn.feature_selection import VarianceThreshold
@@ -60,7 +60,12 @@ class MoleculeDatasetForRegressionHybrid(Dataset):
         for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
                 mol_obj = Chem.MolFromSmiles(row['SMILES'])
+                salt_remover = SaltRemover.SaltRemover()
+                mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
                 mol_obj = Chem.AddHs(mol_obj)
+                carbon_count = sum(1 for atom in mol_obj.GetAtoms() if atom.GetAtomicNum() == 6)
+                if carbon_count < 2:
+                    raise Exception()
                 gcn_features = gcn_featurizer.featurize(mol_obj)
                 node_feats = torch.tensor(np.array(gcn_features[0].node_features))
                 self.n_gcn_features = node_feats.shape[1]
@@ -80,7 +85,7 @@ class MoleculeDatasetForRegressionHybrid(Dataset):
                             mol_features=mol_features_tensor)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
                 graph_index += 1
-            except Exception:
+            except:
                 continue
         mol_features_arr = np.array(mol_features_list)
         np.savetxt(os.path.join('./Datasets', self.dataset_name, 'raw', 'mol_features.csv'), mol_features_arr, delimiter=',')
@@ -220,7 +225,12 @@ class MoleculeDatasetForRegressionPredictionHybrid(Dataset):
         for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
                 mol_obj = Chem.MolFromSmiles(row['SMILES'])
+                salt_remover = SaltRemover.SaltRemover()
+                mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
                 mol_obj = Chem.AddHs(mol_obj)
+                carbon_count = sum(1 for atom in mol_obj.GetAtoms() if atom.GetAtomicNum() == 6)
+                if carbon_count < 2:
+                    raise Exception()
                 gcn_features = gcn_featurizer.featurize(mol_obj)
                 node_feats = torch.tensor(np.array(gcn_features[0].node_features))
                 self.n_gcn_features = node_feats.shape[1]
@@ -238,7 +248,7 @@ class MoleculeDatasetForRegressionPredictionHybrid(Dataset):
                             mol_features=mol_features_tensor)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
                 graph_index += 1
-            except Exception:
+            except:
                 continue
         mol_features_arr = np.array(mol_features_list)
         np.savetxt(os.path.join('./Datasets', self.train_dataset_name, 'raw', 'mol_features.csv'), mol_features_arr, delimiter=',')
@@ -334,12 +344,17 @@ class MoleculeDatasetForRegression3D(Dataset):
                 data = Data(z=z, pos=pos, smiles=row["SMILES"], y=output)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
                 graph_index += 1
-            except Exception:
+            except:
                 continue
 
     def _process_3d(self, smiles):
         mol = Chem.MolFromSmiles(smiles)
+        salt_remover = SaltRemover.SaltRemover()
+        mol = salt_remover.StripMol(mol, dontRemoveEverything=True)
         mol = Chem.AddHs(mol)
+        carbon_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6)
+        if carbon_count < 2:
+            raise Exception()
         num_confs = self.num_conformers
         params = AllChem.ETKDGv3()
         ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
@@ -400,12 +415,17 @@ class MoleculeDatasetForRegressionPrediction3D(Dataset):
                 data = Data(z=z, pos=pos, smiles=row["SMILES"])
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
                 graph_index += 1
-            except Exception:
+            except:
                 continue
 
     def _process_3d(self, smiles):
         mol = Chem.MolFromSmiles(smiles)
+        salt_remover = SaltRemover.SaltRemover()
+        mol = salt_remover.StripMol(mol, dontRemoveEverything=True)
         mol = Chem.AddHs(mol)
+        carbon_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6)
+        if carbon_count < 2:
+            raise Exception()
         num_confs = self.num_conformers
         params = AllChem.ETKDGv3()
         ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
@@ -474,7 +494,12 @@ class MoleculeDatasetForBinaryClassificationHybrid(Dataset):
         for _, (_, mol) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
                 mol_obj = Chem.MolFromSmiles(mol['SMILES'])
+                salt_remover = SaltRemover.SaltRemover()
+                mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
                 mol_obj = Chem.AddHs(mol_obj)
+                carbon_count = sum(1 for atom in mol_obj.GetAtoms() if atom.GetAtomicNum() == 6)
+                if carbon_count < 2:
+                    raise Exception()
                 gcn_features = gcn_featurizer.featurize(mol_obj)
                 node_feats = torch.tensor(np.array(gcn_features[0].node_features))
                 self.n_gcn_features = node_feats.shape[1]
@@ -494,7 +519,7 @@ class MoleculeDatasetForBinaryClassificationHybrid(Dataset):
                             mol_features=mol_features_tensor)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
                 graph_index += 1
-            except Exception:
+            except:
                 continue
         mol_features_arr = np.array(mol_features_list)
         np.savetxt(os.path.join('./Datasets', self.dataset_name, 'raw', 'mol_features.csv'), mol_features_arr, delimiter=',')
@@ -631,7 +656,12 @@ class MoleculeDatasetForBinaryClassificationPredictionHybrid(Dataset):
         for _, (_, row) in enumerate(tqdm(self.data.iterrows(), total=self.data.shape[0])):
             try:
                 mol_obj = Chem.MolFromSmiles(row['SMILES'])
+                salt_remover = SaltRemover.SaltRemover()
+                mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
                 mol_obj = Chem.AddHs(mol_obj)
+                carbon_count = sum(1 for atom in mol_obj.GetAtoms() if atom.GetAtomicNum() == 6)
+                if carbon_count < 2:
+                    raise Exception()
                 gcn_features = gcn_featurizer.featurize(mol_obj)
                 node_feats = torch.tensor(np.array(gcn_features[0].node_features))
                 self.n_gcn_features = node_feats.shape[1]
@@ -649,7 +679,7 @@ class MoleculeDatasetForBinaryClassificationPredictionHybrid(Dataset):
                             mol_features=mol_features_tensor)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
                 graph_index += 1
-            except Exception:
+            except:
                 continue
         mol_features_arr = np.array(mol_features_list)
         np.savetxt(os.path.join('./Datasets', self.train_dataset_name, 'raw', 'mol_features.csv'), mol_features_arr, delimiter=',')
@@ -749,12 +779,17 @@ class MoleculeDatasetForBinaryClassification3D(Dataset):
                 data = Data(z=z, pos=pos, smiles=row["SMILES"], y=output)
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
                 graph_index += 1
-            except Exception:
+            except:
                 continue
 
     def _process_3d(self, smiles):
         mol = Chem.MolFromSmiles(smiles)
+        salt_remover = SaltRemover.SaltRemover()
+        mol = salt_remover.StripMol(mol, dontRemoveEverything=True)
         mol = Chem.AddHs(mol)
+        carbon_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6)
+        if carbon_count < 2:
+            raise Exception()
         num_confs = self.num_conformers
         params = AllChem.ETKDGv3()
         ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
@@ -816,12 +851,17 @@ class MoleculeDatasetForBinaryClassificationPrediction3D(Dataset):
                 data = Data(z=z, pos=pos, smiles=row["SMILES"])
                 torch.save(data, os.path.join(self.processed_dir, f'{self.dataset_name}_{graph_index}.pt'))
                 graph_index += 1
-            except Exception:
+            except:
                 continue
 
     def _process_3d(self, smiles):
         mol = Chem.MolFromSmiles(smiles)
+        salt_remover = SaltRemover.SaltRemover()
+        mol = salt_remover.StripMol(mol, dontRemoveEverything=True)
         mol = Chem.AddHs(mol)
+        carbon_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 6)
+        if carbon_count < 2:
+            raise Exception()
         num_confs = self.num_conformers
         params = AllChem.ETKDGv3()
         ids = AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)

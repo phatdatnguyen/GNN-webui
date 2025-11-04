@@ -22,20 +22,20 @@ class GCNModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = GCN(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout)
+        self.gcn = GCN(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout) if n_gcn_outputs > 0 else None
         self.n_gcn_outputs = n_gcn_outputs
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -45,8 +45,6 @@ class GCNModel(torch.nn.Module):
         if self.n_gcn_outputs > 0:
             h1 = self.gcn(x, edge_index, None, batch_index)
             h1 = global_mean_pool(h1, batch_index)
-        else:
-            h1 = x
 
         if self.mlp:
             h2 = mol_features
@@ -85,20 +83,20 @@ class GraphSAGEModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = GraphSAGE(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout)
+        self.gcn = GraphSAGE(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout) if n_gcn_outputs > 0 else None
         self.n_gcn_outputs = n_gcn_outputs
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -108,8 +106,6 @@ class GraphSAGEModel(torch.nn.Module):
         if self.n_gcn_outputs > 0:
             h1 = self.gcn(x, edge_index, None, None, batch_index)
             h1 = global_mean_pool(h1, batch_index)
-        else:
-            h1 = x
 
         if self.mlp:
             h2 = mol_features
@@ -147,20 +143,20 @@ class GINModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = GIN(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout)
+        self.gcn = GIN(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout) if n_gcn_outputs > 0 else None
         self.n_gcn_outputs = n_gcn_outputs
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -170,8 +166,6 @@ class GINModel(torch.nn.Module):
         if self.n_gcn_outputs > 0:
             h1 = self.gcn(x, edge_index, None, None, batch_index)
             h1 = global_mean_pool(h1, batch_index)
-        else:
-            h1 = x
 
         if self.mlp:
             h2 = mol_features
@@ -209,20 +203,20 @@ class GATModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = GAT(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout)
+        self.gcn = GAT(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout) if n_gcn_outputs > 0 else None
         self.n_gcn_outputs = n_gcn_outputs
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -232,8 +226,6 @@ class GATModel(torch.nn.Module):
         if self.n_gcn_outputs > 0:
             h1 = self.gcn(x, edge_index, None, edge_attr, batch_index)
             h1 = global_mean_pool(h1, batch_index)
-        else:
-            h1 = x
 
         if self.mlp:
             h2 = mol_features
@@ -271,20 +263,20 @@ class EdgeCNNModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = EdgeCNN(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout)
+        self.gcn = EdgeCNN(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout) if n_gcn_outputs > 0 else None
         self.n_gcn_outputs = n_gcn_outputs
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -294,8 +286,6 @@ class EdgeCNNModel(torch.nn.Module):
         if self.n_gcn_outputs > 0:
             h1 = self.gcn(x, edge_index, None, None, batch_index)
             h1 = global_mean_pool(h1, batch_index)
-        else:
-            h1 = x
 
         if self.mlp:
             h2 = mol_features
@@ -343,20 +333,20 @@ class AttentiveFPModel(torch.nn.Module):
             num_timesteps=num_timesteps,
             out_channels=n_gcn_outputs,
             dropout=n_gcn_dropout
-        )
+        ) if n_gcn_outputs > 0 else None
         self.n_gcn_outputs = n_gcn_outputs
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -365,8 +355,6 @@ class AttentiveFPModel(torch.nn.Module):
         h2 = None
         if self.n_gcn_outputs > 0:
             h1 = self.gcn(x, edge_index, edge_attr, batch_index)
-        else:
-            h1 = x
 
         if self.mlp:
             h2 = mol_features
@@ -403,23 +391,23 @@ class GCNConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(GCNConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([GCNConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            GCNConv(n_gcn_inputs, n_gcn_hiddens),
+            *[GCNConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -471,23 +459,23 @@ class SAGEConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(SAGEConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([SAGEConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            SAGEConv(n_gcn_inputs, n_gcn_hiddens),
+            *[SAGEConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -539,23 +527,23 @@ class SGConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(SGConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([SGConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            SGConv(n_gcn_inputs, n_gcn_hiddens),
+            *[SGConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -607,23 +595,23 @@ class ClusterGCNConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(ClusterGCNConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([ClusterGCNConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            ClusterGCNConv(n_gcn_inputs, n_gcn_hiddens),
+            *[ClusterGCNConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -675,23 +663,23 @@ class GraphConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(GraphConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([GraphConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            GraphConv(n_gcn_inputs, n_gcn_hiddens),
+            *[GraphConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -743,23 +731,23 @@ class ChebConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(ChebConv(n_gcn_inputs, n_gcn_hiddens, 2))
-            self.gcn.extend([ChebConv(n_gcn_hiddens, n_gcn_hiddens, 2) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            ChebConv(n_gcn_inputs, n_gcn_hiddens),
+            *[ChebConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -811,23 +799,23 @@ class LEConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(LEConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([LEConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
-
+        self.gcn = ModuleList([
+            LEConv(n_gcn_inputs, n_gcn_hiddens),
+            *[LEConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
+        
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -879,23 +867,23 @@ class EGConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(EGConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([EGConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            EGConv(n_gcn_inputs, n_gcn_hiddens),
+            *[EGConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -947,23 +935,23 @@ class MFConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(MFConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([MFConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            MFConv(n_gcn_inputs, n_gcn_hiddens),
+            *[MFConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1015,23 +1003,23 @@ class FeaStConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(FeaStConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([FeaStConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            FeaStConv(n_gcn_inputs, n_gcn_hiddens),
+            *[FeaStConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1083,23 +1071,23 @@ class TAGConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(TAGConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([TAGConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            TAGConv(n_gcn_inputs, n_gcn_hiddens),
+            *[TAGConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1151,23 +1139,23 @@ class ARMAConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(ARMAConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([ARMAConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            ARMAConv(n_gcn_inputs, n_gcn_hiddens),
+            *[ARMAConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1219,23 +1207,23 @@ class FiLMConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
-        if n_gcn_outputs > 0:
-            self.gcn.append(FiLMConv(n_gcn_inputs, n_gcn_hiddens))
-            self.gcn.extend([FiLMConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)])
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        self.gcn = ModuleList([
+            FiLMConv(n_gcn_inputs, n_gcn_hiddens),
+            *[FiLMConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            Linear(n_gcn_hiddens, n_gcn_outputs)
+        ]) if n_gcn_outputs > 0 else None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1289,8 +1277,8 @@ class PDNConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
         if n_gcn_outputs > 0:
+            self.gcn = ModuleList()
             self.gcn.append(PDNConv(n_gcn_inputs, n_gcn_hiddens, edge_dim, edge_n_hiddens))
             self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
             for i in range(1, n_gcn_layers):
@@ -1299,18 +1287,20 @@ class PDNConvModel(torch.nn.Module):
                     self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
                 else:
                     self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        else:
+            self.gcn = None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1363,8 +1353,8 @@ class GENConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
         if n_gcn_outputs > 0:
+            self.gcn = ModuleList()
             self.gcn.append(GENConv(n_gcn_inputs, n_gcn_hiddens, edge_dim=edge_dim))
             self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
             for i in range(1, n_gcn_layers):
@@ -1373,18 +1363,20 @@ class GENConvModel(torch.nn.Module):
                     self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
                 else:
                     self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        else:
+            self.gcn = None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1437,8 +1429,8 @@ class ResGatedGraphConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
         if n_gcn_outputs > 0:
+            self.gcn = ModuleList()
             self.gcn.append(ResGatedGraphConv(n_gcn_inputs, n_gcn_hiddens, edge_dim=edge_dim))
             self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
             for i in range(1, n_gcn_layers):
@@ -1447,18 +1439,20 @@ class ResGatedGraphConvModel(torch.nn.Module):
                     self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
                 else:
                     self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        else:
+            self.gcn = None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1511,8 +1505,8 @@ class GATConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
         if n_gcn_outputs > 0:
+            self.gcn = ModuleList()
             self.gcn.append(GATConv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads))
             self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
             for i in range(1, n_gcn_layers):
@@ -1521,18 +1515,20 @@ class GATConvModel(torch.nn.Module):
                     self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
                 else:
                     self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_outputs))
+        else:
+            self.gcn = None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1586,8 +1582,8 @@ class GATv2ConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
         if n_gcn_outputs > 0:
+            self.gcn = ModuleList()
             self.gcn.append(GATv2Conv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads, edge_dim=edge_dim))
             self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
             for i in range(1, n_gcn_layers):
@@ -1596,18 +1592,20 @@ class GATv2ConvModel(torch.nn.Module):
                     self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
                 else:
                     self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_outputs))
+        else:
+            self.gcn = None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1660,8 +1658,8 @@ class SuperGATConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
         if n_gcn_outputs > 0:
+            self.gcn = ModuleList()
             self.gcn.append(SuperGATConv(n_gcn_inputs, n_gcn_hiddens, heads=n_gcn_heads, is_undirected=True))
             self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
             for i in range(1, n_gcn_layers):
@@ -1670,18 +1668,20 @@ class SuperGATConvModel(torch.nn.Module):
                     self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
                 else:
                     self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_outputs))
+        else:
+            self.gcn = None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1735,8 +1735,8 @@ class TransformerConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
         if n_gcn_outputs > 0:
+            self.gcn = ModuleList()
             self.gcn.append(TransformerConv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads, edge_dim=edge_dim))
             self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
             self.gcn.append(BatchNorm1d(n_gcn_hiddens))
@@ -1748,18 +1748,20 @@ class TransformerConvModel(torch.nn.Module):
                 else:
                     self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_outputs))
                     self.gcn.append(BatchNorm1d(n_gcn_outputs))
+        else:
+            self.gcn = None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1815,8 +1817,8 @@ class GeneralConvModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = torch.nn.ModuleList()
         if n_gcn_outputs > 0:
+            self.gcn = ModuleList()
             self.gcn.append(GeneralConv(n_gcn_inputs, n_gcn_hiddens, in_edge_channels=edge_dim, attention=True, heads=n_gcn_heads))
             self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
             for i in range(1, n_gcn_layers):
@@ -1825,18 +1827,20 @@ class GeneralConvModel(torch.nn.Module):
                     self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
                 else:
                     self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+        else:
+            self.gcn = None
 
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else ModuleList()
+        ]) if n_mlp_outputs > 0 else None
 
         predictor_input_dim = n_gcn_outputs + n_mlp_outputs
         self.predictor = ModuleList([
             Linear(predictor_input_dim, n_predictor_hiddens),
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
-        ]) if n_predictor_layers > 0 else ModuleList()
+        ]) if n_predictor_layers > 0 else None
 
         self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
 
@@ -1867,17 +1871,4 @@ class GeneralConvModel(torch.nn.Module):
             for linear in self.predictor:
                 h = torch.relu(linear(h))
 
-        return self.out(h)
-
-        if h1 != None and h2 != None:
-            h = torch.cat((h1, h2), dim=1)
-        elif h1 != None:
-            h = h1
-        elif h2 != None:
-            h = h2
-        
-        if len(self.predictor) > 0:
-            for i, linear in enumerate(self.predictor):
-                h = torch.relu(linear(h))
-        
         return self.out(h)

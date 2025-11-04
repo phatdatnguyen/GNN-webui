@@ -170,7 +170,7 @@ def on_create_model(gcn_n_hiddens: gr.Dropdown, gcn_num_layers: gr.Slider, gcn_d
                 model = GeneralConvModel(gcn_n_inputs, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_heads, customgcn_n_outputs, edge_dim,
                                          mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                                          predictor_n_hiddens, predictor_n_layers).to(device)
-
+        
         # Reset training state
         train_losses = []
         val_losses = []
