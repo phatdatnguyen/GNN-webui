@@ -3,10 +3,5 @@ gnn-env/
 .vs/
 .ipynb_checkpoints/
 .gradio/
-Datasets/
-Checkpoints/
-Static/
+Data/
 .vs/
-*.csv
-*.pdb
-*.ipynb

@@ -2,6 +2,46 @@ import torch
 from torch.nn import Linear, ModuleList, BatchNorm1d
 from torch_geometric.nn import GCN, GraphSAGE, GIN, GAT, EdgeCNN, AttentiveFP, GCNConv, SAGEConv, SGConv, ClusterGCNConv, GraphConv, ChebConv, LEConv, EGConv, MFConv, FeaStConv, TAGConv, ARMAConv, FiLMConv, PDNConv, GENConv, ResGatedGraphConv, GATConv, GATv2Conv, SuperGATConv, TransformerConv, GeneralConv, global_mean_pool
 
+class MLPModel(torch.nn.Module):
+    def __init__(
+        self,
+        n_mlp_inputs: int,
+        n_mlp_hiddens: int,
+        n_mlp_layers: int,
+        n_mlp_outputs: int,
+        n_predictor_hiddens: int,
+        n_predictor_layers: int,
+        n_outputs: int
+    ):
+        super().__init__()
+
+        self.mlp = ModuleList([
+            Linear(n_mlp_inputs, n_mlp_hiddens),
+            *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
+            Linear(n_mlp_hiddens, n_mlp_outputs)
+        ]) if n_mlp_outputs > 0 else None
+
+        predictor_input_dim = n_mlp_outputs
+        self.predictor = ModuleList([
+            Linear(predictor_input_dim, n_predictor_hiddens),
+            *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
+        ]) if n_predictor_layers > 0 else None
+
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
+
+    def forward(self, mol_features):
+        h = mol_features
+
+        if self.mlp:
+            for linear in self.mlp:
+                h = torch.relu(linear(h))
+
+        if self.predictor:
+            for linear in self.predictor:
+                h = torch.relu(linear(h))
+
+        return self.out(h)
+
 class GCNModel(torch.nn.Module):
     def __init__(
         self,
@@ -15,7 +55,8 @@ class GCNModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -37,7 +78,7 @@ class GCNModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -76,7 +117,8 @@ class GraphSAGEModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -98,7 +140,7 @@ class GraphSAGEModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -136,7 +178,8 @@ class GINModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -158,7 +201,7 @@ class GINModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -196,7 +239,8 @@ class GATModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -218,7 +262,7 @@ class GATModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         h1 = None
@@ -256,7 +300,8 @@ class EdgeCNNModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -278,7 +323,7 @@ class EdgeCNNModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -318,7 +363,8 @@ class AttentiveFPModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -348,7 +394,7 @@ class AttentiveFPModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         h1 = None
@@ -384,7 +430,8 @@ class GCNConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -409,7 +456,7 @@ class GCNConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -452,7 +499,8 @@ class SAGEConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -477,7 +525,7 @@ class SAGEConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -520,7 +568,8 @@ class SGConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -545,7 +594,7 @@ class SGConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -588,7 +637,8 @@ class ClusterGCNConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -613,7 +663,7 @@ class ClusterGCNConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -656,7 +706,8 @@ class GraphConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -681,7 +732,7 @@ class GraphConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -724,7 +775,8 @@ class ChebConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -749,7 +801,7 @@ class ChebConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -792,7 +844,8 @@ class LEConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -817,7 +870,7 @@ class LEConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -860,7 +913,8 @@ class EGConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -885,7 +939,7 @@ class EGConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -928,7 +982,8 @@ class MFConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -953,7 +1008,7 @@ class MFConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -996,7 +1051,8 @@ class FeaStConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1021,7 +1077,7 @@ class FeaStConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -1064,7 +1120,8 @@ class TAGConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1089,7 +1146,7 @@ class TAGConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -1132,7 +1189,8 @@ class ARMAConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1157,7 +1215,7 @@ class ARMAConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -1200,7 +1258,8 @@ class FiLMConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1225,7 +1284,7 @@ class FiLMConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -1270,7 +1329,8 @@ class PDNConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1302,7 +1362,7 @@ class PDNConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         h1 = None
@@ -1346,7 +1406,8 @@ class GENConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1378,7 +1439,7 @@ class GENConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         h1 = None
@@ -1422,7 +1483,8 @@ class ResGatedGraphConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1454,7 +1516,7 @@ class ResGatedGraphConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         h1 = None
@@ -1498,7 +1560,8 @@ class GATConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1530,7 +1593,7 @@ class GATConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         h1 = None
@@ -1575,7 +1638,8 @@ class GATv2ConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1607,7 +1671,7 @@ class GATv2ConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         h1 = None
@@ -1651,7 +1715,8 @@ class SuperGATConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1683,7 +1748,7 @@ class SuperGATConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, batch_index, mol_features):
         h1 = None
@@ -1728,7 +1793,8 @@ class TransformerConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1763,7 +1829,7 @@ class TransformerConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         h1 = None
@@ -1810,7 +1876,8 @@ class GeneralConvModel(torch.nn.Module):
         n_mlp_layers: int,
         n_mlp_outputs: int,
         n_predictor_hiddens: int,
-        n_predictor_layers: int
+        n_predictor_layers: int,
+        n_outputs: int
     ):
         super().__init__()
 
@@ -1842,7 +1909,7 @@ class GeneralConvModel(torch.nn.Module):
             *[Linear(n_predictor_hiddens, n_predictor_hiddens) for _ in range(1, n_predictor_layers)]
         ]) if n_predictor_layers > 0 else None
 
-        self.out = Linear(n_predictor_hiddens, 1) if n_predictor_layers > 0 else Linear(predictor_input_dim, 1)
+        self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(predictor_input_dim, n_outputs)
 
     def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
         h1 = None

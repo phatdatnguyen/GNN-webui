@@ -1,0 +1,9 @@
+rdkit
+tensorflow
+deepchem
+torch_geometric
+gradio
+nglview
+matplotlib
+plotly
+tabulate
