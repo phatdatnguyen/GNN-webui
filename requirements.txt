@@ -1,9 +1,8 @@
 rdkit
-tensorflow
 deepchem
 torch_geometric
 gradio
-nglview
+nglview==4.0
 matplotlib
 plotly
 tabulate

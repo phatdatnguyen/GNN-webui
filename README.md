@@ -31,8 +31,7 @@ python3 -m venv gnn-env
 source gnn-env/bin/activate
 ```
 
-
-- Install [CUDA Toolkit 12.8](https://developer.nvidia.com/cuda-12-8-0-download-archive) (newer versions are not supported yet):
+- Install [CUDA Toolkit 12.8](https://developer.nvidia.com/cuda-12-8-1-download-archive) (newer versions are not supported yet):
   
 
 - Install packages:
@@ -40,7 +39,7 @@ source gnn-env/bin/activate
 Install [PyTorch](https://pytorch.org/) with CUDA version 12.8
 
 ```
-pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu128
 ```
 
 Install other packages:
@@ -48,7 +47,7 @@ Install other packages:
 ```
 pip install -r requirements.txt
 
-pip install torch-scatter torch-cluster torch-sparse torch_spline_conv -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
+pip install pyg_lib torch_scatter torch_sparse torch_cluster -f https://data.pyg.org/whl/torch-2.9.1+cu128.html
 
 ```
 

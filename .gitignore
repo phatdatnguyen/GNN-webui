@@ -5,3 +5,5 @@ gnn-env/
 .gradio/
 Data/
 .vs/
+
+*.pdb
