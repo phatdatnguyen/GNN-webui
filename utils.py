@@ -74,6 +74,7 @@ def extract_graphs(working_directory_path, dataset_file_name, graph_directory, g
             graph_featurizer = dc.feat.DMPNNFeaturizer(is_adding_hs=False)
         salt_remover = SaltRemover.SaltRemover()
 
+        successful_indices = []
         graph_index = 0
         for i in progress.tqdm(range(len(smiles_list)), total=len(smiles_list), desc="Extracting graphs"):
             smiles = smiles_list[i]
@@ -90,16 +91,21 @@ def extract_graphs(working_directory_path, dataset_file_name, graph_directory, g
 
                 # Save the graph data
                 torch.save(data, os.path.join(graph_dir_path, f'{graph_index}.pt'))
+                successful_indices.append(i)
                 graph_index += 1
             except Exception as exc:
                 print(f"Error processing SMILES '{smiles}': {exc}")
                 continue
 
         graph_count = graph_index
-        status = f"{graph_count} graphs extracted and saved to '{graph_directory}' successfully."
+        n_failed = len(smiles_list) - graph_count
+        if n_failed > 0:
+            df.iloc[successful_indices].reset_index(drop=True).to_csv(dataset_file_path, index=False)
+            status = f"{graph_count} graphs extracted to '{graph_directory}'; {n_failed} molecule(s) failed and were removed from {dataset_file_name}. Re-run molecular fingerprint extraction if previously done."
+        else:
+            status = f"{graph_count} graphs extracted and saved to '{graph_directory}' successfully."
         return f"<span style='color: green;'>{status}</span>"
     except Exception as exc:
-        status = f"Error extracting graphs: {exc}"
         return f"<span style='color: red;'>Error extracting graphs: {exc}</span>"
     
 def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory, num_conformers, force_field, datatype, progress):
@@ -115,6 +121,7 @@ def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory
         # Graph extraction and featurization
         salt_remover = SaltRemover.SaltRemover()
 
+        successful_indices = []
         graph_index = 0
         for i in progress.tqdm(range(len(smiles_list)), total=len(smiles_list), desc="Extracting graphs"):
             smiles = smiles_list[i]
@@ -140,6 +147,8 @@ def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory
                         ff = AllChem.UFFGetMoleculeForceField(mol_obj, confId=conf_id)
                     energy = ff.CalcEnergy()
                     energies.append((conf_id, energy))
+                if not energies:
+                    raise ValueError("No conformers could be embedded for this molecule.")
                 min_conf_id = min(energies, key=lambda x: x[1])[0]
                 min_conf = mol_obj.GetConformer(id=min_conf_id)
                 z = [atom.GetAtomicNum() for atom in mol_obj.GetAtoms()]
@@ -158,16 +167,21 @@ def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory
 
                 # Save the graph data
                 torch.save(data, os.path.join(graph_dir_path, f'{graph_index}.pt'))
+                successful_indices.append(i)
                 graph_index += 1
             except Exception as exc:
                 print(f"Error processing SMILES '{smiles}': {exc}")
                 continue
 
         graph_count = graph_index
-        status = f"{graph_count} graphs extracted and saved to '{graph_directory}' successfully."
+        n_failed = len(smiles_list) - graph_count
+        if n_failed > 0:
+            df.iloc[successful_indices].reset_index(drop=True).to_csv(dataset_file_path, index=False)
+            status = f"{graph_count} graphs extracted to '{graph_directory}'; {n_failed} molecule(s) failed conformer generation and were removed from {dataset_file_name}."
+        else:
+            status = f"{graph_count} graphs extracted and saved to '{graph_directory}' successfully."
         return f"<span style='color: green;'>{status}</span>"
     except Exception as exc:
-        status = f"Error extracting graphs: {exc}"
         return f"<span style='color: red;'>Error extracting graphs: {exc}</span>"
     
 def extract_molecule_fingerprints(working_directory_path, dataset_file_name, molecular_fingerprint_directory, molecular_fingerprint_name, radius, number_of_bits, progress):
@@ -182,6 +196,7 @@ def extract_molecule_fingerprints(working_directory_path, dataset_file_name, mol
 
         # Molecular fingerprint extraction
         fp_list = []
+        successful_indices = []
         salt_remover = SaltRemover.SaltRemover()
         for i in progress.tqdm(range(len(smiles_list)), total=len(smiles_list), desc="Extracting molecular fingerprints"):
             smiles = smiles_list[i]
@@ -208,7 +223,9 @@ def extract_molecule_fingerprints(working_directory_path, dataset_file_name, mol
                 row = [smiles]
                 row.extend(fp)
                 fp_list.append(row)
-            except:
+                successful_indices.append(i)
+            except Exception as exc:
+                print(f"Error processing SMILES '{smiles}': {exc}")
                 continue
 
         # Save the molecular fingerprints to a CSV file
@@ -218,8 +235,13 @@ def extract_molecule_fingerprints(working_directory_path, dataset_file_name, mol
             for row in fp_list:
                 f.write(','.join(map(str, row)) + '\n')
 
-        status = f"{len(smiles_list)} molecular fingerprints extracted and saved to '{molecular_fingerprint_directory}' successfully."
+        n_extracted = len(fp_list)
+        n_failed = len(smiles_list) - n_extracted
+        if n_failed > 0:
+            df.iloc[successful_indices].reset_index(drop=True).to_csv(dataset_file_path, index=False)
+            status = f"{n_extracted} molecular fingerprints extracted to '{molecular_fingerprint_directory}'; {n_failed} molecule(s) failed and were removed from {dataset_file_name}. Re-run graph extraction if previously done."
+        else:
+            status = f"{n_extracted} molecular fingerprints extracted and saved to '{molecular_fingerprint_directory}' successfully."
         return f"<span style='color: green;'>{status}</span>"
     except Exception as exc:
-        status = f"Error extracting molecular fingerprints: {exc}"
-        return f"<span style='color: red;'>{status}</span>"
+        return f"<span style='color: red;'>Error extracting molecular fingerprints: {exc}</span>"

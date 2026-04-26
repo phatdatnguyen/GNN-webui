@@ -865,7 +865,7 @@ def binary_classification_tab_content():
                         with gr.Column(scale=1):
                             gr.Markdown(value="**Molecular fingerprint extraction**")
                             molecular_fingerprint_directory_textbox = gr.Textbox(label="Molecular fingerprint directory", value="molecular_fingerprints")
-                            molecular_fingerprint_dropdown = gr.Dropdown(label="Molecular fingerprint", value="Morgan fingerprint", choices=["Morgan fingerprint", "Atom-pairs fingerprint", "Topological-torsion fingerprint", "Avalon fingerprint", "Layered fingerprint", "Pattern fingerprint", "RDKit fingerprint"])
+                            molecular_fingerprint_dropdown = gr.Dropdown(label="Molecular fingerprint", value="Morgan fingerprint", choices=["Morgan fingerprint", "Atom-pair fingerprint", "Topological-torsion fingerprint", "Avalon fingerprint", "Layered fingerprint", "Pattern fingerprint", "RDKit fingerprint"])
                             radius_slider = gr.Slider(label="Radius", value=2, minimum=1, maximum=5, step=1)
                             number_of_bits_slider = gr.Slider(label="Number of bits", value=2048, minimum=128, maximum=4096, step=128)
                             extract_molecule_fingerprints_button = gr.Button(value="Extract molecular fingerprints", interactive=False)

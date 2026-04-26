@@ -440,7 +440,7 @@ def on_evaluate(model, dataset, test_dataloader, device, datatype):
     TN = cm[0, 0] if cm.shape[0] > 1 else 0
     FP = cm[0, 1] if cm.shape[1] > 1 else 0
     specificity = TN / (TN + FP) if (TN + FP) > 0 else 0.0
-    roc_auc = roc_auc_score(y_test_np, y_pred_np)
+    roc_auc = roc_auc_score(y_test_np, probabilities_np)
 
     metrics_df = pd.DataFrame({
         'Metric': ['Accuracy', 'Precision', 'Recall', 'Specificity', 'F1 score', 'ROC-AUC score'],
@@ -448,7 +448,7 @@ def on_evaluate(model, dataset, test_dataloader, device, datatype):
     })
 
     # Generate ROC curve values using probabilities
-    fpr, tpr, _ = roc_curve(y_test_np, y_pred_np)
+    fpr, tpr, _ = roc_curve(y_test_np, probabilities_np)
     roc_auc_val = auc(fpr, tpr)
 
     # Plotting the ROC curve
