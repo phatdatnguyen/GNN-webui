@@ -64,19 +64,19 @@ def extract_graphs(working_directory_path, dataset_file_name, graph_directory, g
         os.makedirs(graph_dir_path, exist_ok=True)
 
         # Graph extraction and featurization
+        if graph_featurizer_name == 'MolGraphConvFeaturizer':
+            graph_featurizer = dc.feat.MolGraphConvFeaturizer(use_edges=True, use_chirality=True, use_partial_charge=True)
+        elif graph_featurizer_name == 'PagtnMolGraphFeaturizer':
+            graph_featurizer = dc.feat.PagtnMolGraphFeaturizer(max_length=5)
+        else:
+            graph_featurizer = dc.feat.DMPNNFeaturizer(is_adding_hs=False)
+        salt_remover = SaltRemover.SaltRemover()
+
         graph_index = 0
         for i in progress.tqdm(range(len(smiles_list)), total=len(smiles_list), desc="Extracting graphs"):
             smiles = smiles_list[i]
             try:
-                if graph_featurizer_name == 'MolGraphConvFeaturizer':
-                    graph_featurizer = dc.feat.MolGraphConvFeaturizer(use_edges=True, use_chirality=True, use_partial_charge=True)
-                elif graph_featurizer_name == 'PagtnMolGraphFeaturizer':
-                    graph_featurizer = dc.feat.PagtnMolGraphFeaturizer(max_length=5)
-                else: # if self.gcn_featurizer_name == 'DMPNNFeaturizer':
-                    graph_featurizer = dc.feat.DMPNNFeaturizer(is_adding_hs=False)
-
                 mol_obj = Chem.MolFromSmiles(smiles)
-                salt_remover = SaltRemover.SaltRemover()
                 mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
                 mol_obj = Chem.AddHs(mol_obj)
                 graph = graph_featurizer.featurize(mol_obj)
@@ -112,11 +112,11 @@ def extract_molecule_fingerprints(working_directory_path, dataset_file_name, mol
 
         # Molecular fingerprint extraction
         fp_list = []
+        salt_remover = SaltRemover.SaltRemover()
         for i in progress.tqdm(range(len(smiles_list)), total=len(smiles_list), desc="Extracting molecular fingerprints"):
             smiles = smiles_list[i]
             try:
                 mol_obj = Chem.MolFromSmiles(smiles)
-                salt_remover = SaltRemover.SaltRemover()
                 mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
                 mol_obj = Chem.AddHs(mol_obj)
 

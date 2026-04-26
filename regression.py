@@ -46,8 +46,6 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
             file_type = "Checkpoint file"
         elif content.endswith('.csv'):
             file_type = "Data file"
-        elif content.endswith('.ckpt'):
-            file_type = "Checkpoint file"
         else:
             file_type = "Other file"
         modified_time = time.ctime(os.path.getmtime(content_path))
@@ -77,7 +75,7 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
         molecular_fingerprint_directory_value = directories[0] if directories else None
 
     if checkpoint_file_name in checkpoint_files:
-        checkpoint_file_name_value = molecular_fingerprint_directory
+        checkpoint_file_name_value = checkpoint_file_name
     else:
         checkpoint_file_name_value = checkpoint_files[0] if checkpoint_files else None
 
@@ -155,9 +153,9 @@ def on_dimensionality_reduction_change(dimensionality_reduction_enabled):
 def on_process_data(working_directory_path, dataset_file_name, load_data, graph_directory, molecular_fingerprint_directory, datatype, dimensionality_reduction, variance_threshold, pca_num_components, test_ratio, val_ratio, batch_size, random_seed):
     try:
         # Validate inputs
-        if graph_directory is None or graph_directory.strip() == "":
+        if load_data in ('Graphs', 'Both') and (graph_directory is None or graph_directory.strip() == ""):
             raise ValueError("Please select a graph directory.")
-        if molecular_fingerprint_directory is None or molecular_fingerprint_directory.strip() == "":
+        if load_data in ('Molecular fingerprints', 'Both') and (molecular_fingerprint_directory is None or molecular_fingerprint_directory.strip() == ""):
             raise ValueError("Please select a molecular fingerprint directory.")
 
         # Validate output columns
@@ -258,6 +256,11 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
     torch.manual_seed(random_seed)
     if device == 'cuda':
         torch.cuda.manual_seed(random_seed)
+
+    model = None
+    train_losses = []
+    val_losses = []
+    trained_epochs = 0
 
     try:
         # Create the model based on the selected GNN architecture
@@ -587,7 +590,7 @@ def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype,
     plt.plot(train_losses, label='Train loss')
     plt.plot(val_losses, label='Validation loss')
     plt.xlabel('Epoch')
-    plt.ylabel('BCE with logits loss')
+    plt.ylabel('RMSE loss')
     plt.legend()
     plt.grid(True)
     plt.close()

@@ -45,8 +45,6 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
             file_type = "Checkpoint file"
         elif content.endswith('.csv'):
             file_type = "Data file"
-        elif content.endswith('.ckpt'):
-            file_type = "Checkpoint file"
         else:
             file_type = "Other file"
         modified_time = time.ctime(os.path.getmtime(content_path))
@@ -76,7 +74,7 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
         molecular_fingerprint_directory_value = directories[0] if directories else None
 
     if checkpoint_file_name in checkpoint_files:
-        checkpoint_file_name_value = molecular_fingerprint_directory
+        checkpoint_file_name_value = checkpoint_file_name
     else:
         checkpoint_file_name_value = checkpoint_files[0] if checkpoint_files else None
 
@@ -154,9 +152,9 @@ def on_dimensionality_reduction_change(dimensionality_reduction_enabled):
 def on_process_data(working_directory_path, dataset_file_name, load_data, graph_directory, molecular_fingerprint_directory, datatype, dimensionality_reduction, variance_threshold, pca_num_components, test_ratio, val_ratio, batch_size, random_seed):
     try:
         # Validate inputs
-        if graph_directory is None or graph_directory.strip() == "":
+        if load_data in ('Graphs', 'Both') and (graph_directory is None or graph_directory.strip() == ""):
             raise ValueError("Please select a graph directory.")
-        if molecular_fingerprint_directory is None or molecular_fingerprint_directory.strip() == "":
+        if load_data in ('Molecular fingerprints', 'Both') and (molecular_fingerprint_directory is None or molecular_fingerprint_directory.strip() == ""):
             raise ValueError("Please select a molecular fingerprint directory.")
 
         # Validate output columns
@@ -258,6 +256,11 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
     torch.manual_seed(random_seed)
     if device == 'cuda':
         torch.cuda.manual_seed(random_seed)
+
+    model = None
+    train_losses = []
+    val_losses = []
+    trained_epochs = 0
 
     try:
         # Create the model based on the selected GNN architecture
@@ -587,7 +590,7 @@ def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype,
     plt.plot(train_losses, label='Train loss')
     plt.plot(val_losses, label='Validation loss')
     plt.xlabel('Epoch')
-    plt.ylabel('BCE with logits loss')
+    plt.ylabel('sqrt(BCE with logits loss)')
     plt.legend()
     plt.grid(True)
     plt.close()
@@ -667,6 +670,7 @@ def on_target_column_change(eval_df, target_column):
     # Evaluate the model using different metrics
     y_test_target = eval_df[target_column].to_numpy()
     y_pred_target = eval_df[f"{target_column} (Prediction)"].to_numpy()
+    y_prob_target = eval_df[f"{target_column} (Probability)"].to_numpy()
     cm = confusion_matrix(y_test_target, y_pred_target)
     display = ConfusionMatrixDisplay(confusion_matrix=cm)
     cm_figure, ax = plt.subplots(figsize=(6, 6))
@@ -680,15 +684,15 @@ def on_target_column_change(eval_df, target_column):
     TN = cm[0, 0] if cm.shape[0] > 1 else 0
     FP = cm[0, 1] if cm.shape[1] > 1 else 0
     specificity = TN / (TN + FP) if (TN + FP) > 0 else 0.0
-    roc_auc = roc_auc_score(y_test_target, y_pred_target)
+    roc_auc = roc_auc_score(y_test_target, y_prob_target)
 
     metrics_df = pd.DataFrame({
         'Metric': ['Accuracy', 'Precision', 'Recall', 'Specificity', 'F1 score', 'ROC-AUC score'],
         'Value': [accuracy, precision, recall, specificity, f1, roc_auc]
     })
 
-    # Generate ROC curve values
-    fpr, tpr, _ = roc_curve(y_test_target, y_pred_target)
+    # Generate ROC curve values using probabilities
+    fpr, tpr, _ = roc_curve(y_test_target, y_prob_target)
     roc_auc_val = auc(fpr, tpr)
 
     # Plotting the ROC curve
@@ -711,11 +715,13 @@ def on_evaluate(model, dataset, test_dataloader, device, datatype, gnn_model_tab
     y_test_np = y_test.int().detach().numpy()
     y_pred_np = torch.round(probabilities).int().detach().numpy()
     
+    probabilities_np = probabilities.detach().numpy()
     eval_df = pd.DataFrame()
     eval_df['SMILES'] = smiles_list
     for col_idx, col_name in enumerate(dataset.target_column_names):
         eval_df[col_name] = y_test_np[:, col_idx].tolist()
         eval_df[f"{col_name} (Prediction)"] = y_pred_np[:, col_idx].tolist()
+        eval_df[f"{col_name} (Probability)"] = probabilities_np[:, col_idx].tolist()
 
     status = f"Evaluation completed."
 
