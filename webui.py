@@ -1,8 +1,10 @@
 import os
 import glob
 import gradio as gr
-from regression import regression_tab_content
 from binary_classification import binary_classification_tab_content
+from binary_classification_3d import binary_classification_3d_tab_content
+from regression import regression_tab_content
+from regression_3d import regression_3d_tab_content
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -43,7 +45,9 @@ available_port = find_available_port()
 with gr.Blocks() as blocks:
     with gr.Tabs() as tabs:
         binary_classification_tab_content()
+        binary_classification_3d_tab_content()
         regression_tab_content()
+        regression_3d_tab_content()
 
 # mount Gradio app to FastAPI app
 app = gr.mount_gradio_app(app, blocks, css_paths=Path('./styles.css'), path="/", allowed_paths=["./", "./Static"])

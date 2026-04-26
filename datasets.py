@@ -82,3 +82,33 @@ class MolecularDataset(Dataset):
     @property
     def num_outputs(self):
         return self.df.shape[1] - 1
+    
+class MolecularDataset3D(Dataset):
+    def __init__(self, dataset_file_path, graph_directory_path, datatype):
+        self.dataset_file_path = dataset_file_path
+        self.df = pd.read_csv(dataset_file_path)
+        self.target_column_name = self.df.columns[1] if self.df.shape[1] > 1 else None
+        self.datatype = datatype
+        
+        # Validate that the graph data are present if needed
+        self.graph_directory_path = graph_directory_path
+        num_graphs = len(os.listdir(graph_directory_path))
+        if num_graphs == 0:
+            raise ValueError(f"No graph files found in {graph_directory_path}")
+
+    def  __len__(self):
+        return len(os.listdir(self.graph_directory_path))
+
+    def __getitem__(self, idx):
+        data = torch.load(os.path.join(self.graph_directory_path, f'{idx}.pt'), weights_only=False)
+        
+        if self.df.shape[1] == 1: # Only SMILES column, no target columns
+            data.y = None
+        else:
+            data.y = torch.tensor(self.df.drop(columns=['SMILES']).iloc[idx].values, dtype=self.datatype).unsqueeze(0)
+        
+        return data
+            
+    @property
+    def num_outputs(self):
+        return 1

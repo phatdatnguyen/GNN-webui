@@ -4,12 +4,12 @@ import numpy as np
 import pandas as pd
 from rdkit import Chem
 from rdkit.Avalon import pyAvalonTools
-from rdkit.Chem import SaltRemover, rdFingerprintGenerator, rdmolops
+from rdkit.Chem import AllChem, SaltRemover, rdFingerprintGenerator, rdmolops
 import deepchem as dc
 import torch
 from torch_geometric.data import Data
 
-def process_dataset_file(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_column_names):
+def process_dataset_file(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_column_names, is_3d_dataset=False):
     try:
         # Load the dataset and validate columns
         df = pd.read_csv(dataset_file_path)
@@ -21,6 +21,8 @@ def process_dataset_file(dataset_file_path, working_directory_path, dataset_name
             target_column_name_list = []
         else:
             target_column_name_list = [col.strip() for col in target_column_names.split(",")]
+            if is_3d_dataset and len(target_column_name_list) > 1:
+                raise ValueError(f"3D model only accept 1 target column")
             missing_target_columns = [col for col in target_column_name_list if col not in df.columns]
             if missing_target_columns:
                 raise ValueError(f"Target columns not found in the dataset: {', '.join(missing_target_columns)}")
@@ -30,13 +32,13 @@ def process_dataset_file(dataset_file_path, working_directory_path, dataset_name
         df = df.dropna() # Remove the rows with no data
 
         # Filter out invalid SMILES and those with no carbon or only 1 carbon
+        salt_remover = SaltRemover.SaltRemover()
         for smiles in df['SMILES']:
             mol_obj = Chem.MolFromSmiles(smiles)
             if mol_obj is None:
                 df = df[df['SMILES'] != smiles]
                 print(f"Invalid SMILES '{smiles}' removed from the dataset.")
                 continue
-            salt_remover = SaltRemover.SaltRemover()
             mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
             carbon_count = sum(1 for atom in mol_obj.GetAtoms() if atom.GetAtomicNum() == 6)
             if carbon_count == 0 or smiles == '[C]':
@@ -85,6 +87,74 @@ def extract_graphs(working_directory_path, dataset_file_name, graph_directory, g
                 edge_attr = torch.tensor(np.array(graph[0].edge_features), dtype=datatype)
 
                 data = Data(x=node_feats, edge_index=edge_index, edge_attr=edge_attr, smiles=df['SMILES'].iloc[i])
+
+                # Save the graph data
+                torch.save(data, os.path.join(graph_dir_path, f'{graph_index}.pt'))
+                graph_index += 1
+            except Exception as exc:
+                print(f"Error processing SMILES '{smiles}': {exc}")
+                continue
+
+        graph_count = graph_index
+        status = f"{graph_count} graphs extracted and saved to '{graph_directory}' successfully."
+        return f"<span style='color: green;'>{status}</span>"
+    except Exception as exc:
+        status = f"Error extracting graphs: {exc}"
+        return f"<span style='color: red;'>Error extracting graphs: {exc}</span>"
+    
+def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory, num_conformers, force_field, datatype, progress):
+    try:
+        dataset_file_path = os.path.join(working_directory_path, dataset_file_name)
+        df = pd.read_csv(dataset_file_path)
+        smiles_list = df['SMILES'].tolist()
+        graph_dir_path = os.path.join(working_directory_path, graph_directory)
+        if os.path.exists(graph_dir_path):
+            shutil.rmtree(graph_dir_path)
+        os.makedirs(graph_dir_path, exist_ok=True)
+
+        # Graph extraction and featurization
+        salt_remover = SaltRemover.SaltRemover()
+
+        graph_index = 0
+        for i in progress.tqdm(range(len(smiles_list)), total=len(smiles_list), desc="Extracting graphs"):
+            smiles = smiles_list[i]
+            try:
+                mol_obj = Chem.MolFromSmiles(smiles)
+                mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
+                mol_obj = Chem.AddHs(mol_obj)
+                params = AllChem.ETKDGv3()
+                ids = AllChem.EmbedMultipleConfs(mol_obj, numConfs=num_conformers, params=params)
+                if force_field == "MMFF":
+                    if not AllChem.MMFFHasAllMoleculeParams(mol_obj):
+                        raise ValueError("MMFF parameters are not available for this molecule.")
+                    mmff_props = AllChem.MMFFGetMoleculeProperties(mol_obj)
+                    if mmff_props is None:
+                        raise ValueError("MMFF parameters are not available for this molecule.")
+                energies = []
+                for conf_id in ids:
+                    if force_field == "MMFF":
+                        AllChem.MMFFOptimizeMolecule(mol_obj, confId=conf_id, maxIters=200)
+                        ff = AllChem.MMFFGetMoleculeForceField(mol_obj, mmff_props, confId=conf_id)
+                    else: #force_field=="UFF"
+                        AllChem.UFFOptimizeMolecule(mol_obj, confId=conf_id, maxIters=200)
+                        ff = AllChem.UFFGetMoleculeForceField(mol_obj, confId=conf_id)
+                    energy = ff.CalcEnergy()
+                    energies.append((conf_id, energy))
+                min_conf_id = min(energies, key=lambda x: x[1])[0]
+                min_conf = mol_obj.GetConformer(id=min_conf_id)
+                z = [atom.GetAtomicNum() for atom in mol_obj.GetAtoms()]
+                pos = np.array([
+                    [
+                        min_conf.GetAtomPosition(i).x,
+                        min_conf.GetAtomPosition(i).y,
+                        min_conf.GetAtomPosition(i).z,
+                    ]
+                    for i in range(mol_obj.GetNumAtoms())
+                ])
+                z = torch.tensor(z, dtype=datatype)
+                pos = torch.tensor(pos, dtype=datatype)
+
+                data = Data(z=z, pos=pos, smiles=df['SMILES'].iloc[i])
 
                 # Save the graph data
                 torch.save(data, os.path.join(graph_dir_path, f'{graph_index}.pt'))

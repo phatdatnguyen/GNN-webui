@@ -124,12 +124,10 @@ def on_upload_dataset(dataset_file_path, working_directory_path, dataset_name, s
     if dataset_file_path is None or dataset_file_path.strip() == "":
         status = "Please select a dataset file."
         return f"<span style='color: red;'>{status}</span>", None, get_working_directory_contents(working_directory_path)
-    
+
     status, df = process_dataset_file(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_columns)
-    if df is not None:
-        return f"<span style='color: green;'>{status}</span>", df.head(10), get_working_directory_contents(working_directory_path)
-    else:
-        return f"<span style='color: red;'>{status}</span>", None, get_working_directory_contents(working_directory_path)
+    preview = df.head(10) if df is not None else None
+    return status, preview, get_working_directory_contents(working_directory_path)
 
 def on_extract_graphs(working_directory_path, dataset_file_name, graph_directory, graph_featurizer_name, datatype, progress=gr.Progress()):
     status = extract_graphs(working_directory_path, dataset_file_name, graph_directory, graph_featurizer_name, datatype, progress)
@@ -187,22 +185,22 @@ def on_process_data(working_directory_path, dataset_file_name, load_data, graph_
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
         test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
         
-        # Set up feature transformers
+        # Set up feature transformers (fit on training split only to avoid leakage)
         if dimensionality_reduction:
             variance_threshold = VarianceThreshold(variance_threshold)
             pca = PCA(n_components=pca_num_components)
             fingerprint_df = pd.read_csv(os.path.join(molecular_fingerprint_directory_path, "molecular_fingerprints.csv"))
-            fingerprints = fingerprint_df.drop(columns=['SMILES']).values
-            fingerprints_variance_thresholded = variance_threshold.fit_transform(fingerprints)
-            pca.fit(fingerprints_variance_thresholded)
+            train_fingerprints = fingerprint_df.drop(columns=['SMILES']).iloc[train_dataset.indices].values
+            train_fingerprints_variance_thresholded = variance_threshold.fit_transform(train_fingerprints)
+            pca.fit(train_fingerprints_variance_thresholded)
         else:
             variance_threshold = None
             pca = None
 
-        # Set up output scaler
+        # Set up output scaler (fit on training split only to avoid leakage)
         output_scaler = MinMaxScaler(feature_range=(0, 1))
-        target_columns = dataset.df.drop(columns=['SMILES']).to_numpy()
-        output_scaler.fit(target_columns)
+        train_targets = dataset.df.drop(columns=['SMILES']).iloc[train_dataset.indices].to_numpy()
+        output_scaler.fit(train_targets)
 
         target_column_names = dataset.target_column_names
 
@@ -312,6 +310,10 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
                 model = GraphConvModel(gcn_n_inputs, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_outputs,
                                        mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                                        predictor_n_hiddens, predictor_n_layers, n_outputs).to(device=device, dtype=datatype)
+            elif customgcn_convolutional_layer_name == "ChebConv":
+                model = ChebConvModel(gcn_n_inputs, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_outputs,
+                                      mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                                      predictor_n_hiddens, predictor_n_layers, n_outputs).to(device=device, dtype=datatype)
             elif customgcn_convolutional_layer_name == "LEConv":
                 model = LEConvModel(gcn_n_inputs, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_outputs,
                                     mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
@@ -324,6 +326,10 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
                 model = MFConvModel(gcn_n_inputs, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_outputs,
                                     mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                                     predictor_n_hiddens, predictor_n_layers, n_outputs).to(device=device, dtype=datatype)
+            elif customgcn_convolutional_layer_name == "FeaStConv":
+                model = FeaStConvModel(gcn_n_inputs, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_outputs,
+                                       mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
+                                       predictor_n_hiddens, predictor_n_layers, n_outputs).to(device=device, dtype=datatype)
             elif customgcn_convolutional_layer_name == "TAGConv":
                 model = TAGConvModel(gcn_n_inputs, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_outputs,
                                      mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
@@ -656,8 +662,8 @@ def test(model, dataset, dataloader, device, datatype, output_scaler, gnn_model_
                 output = model(x, edge_index, batch_index, fingerprints_tensor)
 
         smiles_arr.extend(smiles)
-        y_test_list.append(y.cpu())
-        y_pred_scaled_list.append(output.cpu())
+        y_test_list.append(y.detach())
+        y_pred_scaled_list.append(output.cpu().detach())
 
     y_test = torch.cat(y_test_list, dim=0) if y_test_list else torch.tensor([])
     y_pred_scaled = torch.cat(y_pred_scaled_list, dim=0) if y_pred_scaled_list else torch.tensor([])
@@ -909,7 +915,7 @@ def regression_tab_content():
                                     attentivefp_n_outputs = gr.Slider(label="n_outputs", minimum=0, maximum=512, value=50, step=1)
                                     attentivefp_tab.select(on_gnn_model_tab_selected, [], gnn_model_tab_state)
                                 with gr.Tab("Custom") as customgcn_tab:
-                                    customgcn_convolutional_layer_name = gr.Dropdown(label="Graph convolutional layer", value="GCNConv", choices=["GCNConv", "SAGEConv", "CuGraphSAGEConv", "SGConv", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "PDNConv", "GENConv", "ResGatedGraphConv", "GATConv", "GATv2Conv", "SuperGATConv", "TransformerConv", "GeneralConv"])
+                                    customgcn_convolutional_layer_name = gr.Dropdown(label="Graph convolutional layer", value="GCNConv", choices=["GCNConv", "SAGEConv", "SGConv", "ClusterGCNConv", "GraphConv", "ChebConv", "LEConv", "EGConv", "MFConv", "FeaStConv", "TAGConv", "ARMAConv", "FiLMConv", "PDNConv", "GENConv", "ResGatedGraphConv", "GATConv", "GATv2Conv", "SuperGATConv", "TransformerConv", "GeneralConv"])
                                     customgcn_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
                                     customgcn_n_layers = gr.Slider(label="n_layers", minimum=1, maximum=6, value=3, step=1)
                                     customgcn_n_heads = gr.Slider(label="n_heads", minimum=1, maximum=8, value=3, step=1)
