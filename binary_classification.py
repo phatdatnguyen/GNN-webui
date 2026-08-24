@@ -15,19 +15,21 @@ from models import *
 from utils import *
 
 def get_working_directories():
-    base_path = "./Data/"
-    return [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
+    os.makedirs(DATA_DIR, exist_ok=True)
+    return sorted(d for d in os.listdir(DATA_DIR) if os.path.isdir(os.path.join(DATA_DIR, d)))
 
 def get_working_directory_contents(working_directory_path):
     contents = [f for f in os.listdir(working_directory_path)]
     return contents
 
 def on_open_working_directory(working_directory_name):
-    if working_directory_name is None or working_directory_name.strip() == "":
-        gr.Warning("Please specify a working directory.")
+    try:
+        working_directory_name = sanitize_path_component(working_directory_name, "working directory name")
+    except ValueError as exc:
+        gr.Warning(str(exc))
         return None, gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), None, None
-    
-    working_directory_path = os.path.join("./Data/", working_directory_name)
+
+    working_directory_path = os.path.join(DATA_DIR, working_directory_name)
     os.makedirs(working_directory_path, exist_ok=True)
     files = get_working_directory_contents(working_directory_path)
     
@@ -47,10 +49,11 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
             file_type = "Data file"
         else:
             file_type = "Other file"
-        modified_time = time.ctime(os.path.getmtime(content_path))
-        contents_info.append([content, file_type, modified_time])
-        contents_info.sort(key=lambda x: x[2].lower(), reverse=True) # Sort by modified time descending
-    contents_df = pd.DataFrame(contents_info, columns=["File", "Type", "Modified"])
+        modified_timestamp = os.path.getmtime(content_path)
+        contents_info.append([content, file_type, time.ctime(modified_timestamp), modified_timestamp])
+    # Sort on the numeric timestamp: the ctime string sorts by weekday name, not by date.
+    contents_info.sort(key=lambda x: x[3], reverse=True)
+    contents_df = pd.DataFrame([row[:3] for row in contents_info], columns=["File", "Type", "Modified"])
 
     # Filter files
     data_files = [f for f in contents if f.endswith('.csv')]
@@ -190,8 +193,9 @@ def on_process_data(working_directory_path, dataset_file_name, load_data, graph_
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
         test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
         
-        # Set up feature transformers (fit on training split only to avoid leakage)
-        if dimensionality_reduction:
+        # Set up feature transformers (fit on training split only to avoid leakage).
+        # The checkbox is only hidden - not reset - when fingerprints are not loaded, so ignore it here.
+        if dimensionality_reduction and load_data in ('Molecular fingerprints', 'Both'):
             variance_threshold = VarianceThreshold(variance_threshold)
             pca = PCA(n_components=pca_num_components)
             fingerprint_df = pd.read_csv(os.path.join(molecular_fingerprint_directory_path, "molecular_fingerprints.csv"))
@@ -208,7 +212,7 @@ def on_process_data(working_directory_path, dataset_file_name, load_data, graph_
         return f"<span style='color: green;'>{status}</span>", gr.update(interactive=True), gr.update(choices=target_column_names, value=target_column_names[0]), dataset, train_dataloader, val_dataloader, test_dataloader, variance_threshold, pca
     except Exception as exc:
         status = f"Error processing data: {exc}"
-        return f"<span style='color: red;'>{status}</span>", None, None, None, None, None, None, None, None
+        return f"<span style='color: red;'>{status}</span>", gr.update(interactive=False), gr.update(choices=[], value=None), None, None, None, None, None, None
 
 def on_gnn_model_tab_selected(evt: gr.SelectData):
     return evt.value
@@ -278,7 +282,7 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
                              mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                              predictor_n_hiddens, predictor_n_layers, n_outputs).to(device=device, dtype=datatype)
         elif gnn_model_tab == "GAT":
-            model = GATModel(gcn_n_inputs, gat_n_hiddens, gat_num_layers, gat_n_outputs, gat_dropout,
+            model = GATModel(gcn_n_inputs, gat_n_hiddens, edge_dim, gat_num_layers, gat_n_outputs, gat_dropout,
                              mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                              predictor_n_hiddens, predictor_n_layers, n_outputs).to(device=device, dtype=datatype)
         elif gnn_model_tab == "EdgeCNN":
@@ -355,7 +359,7 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
                                                mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                                                predictor_n_hiddens, predictor_n_layers, n_outputs).to(device=device, dtype=datatype)
             elif customgcn_convolutional_layer_name == "GATConv":
-                model = GATConvModel(gcn_n_inputs, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_heads, customgcn_n_outputs,
+                model = GATConvModel(gcn_n_inputs, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_heads, customgcn_n_outputs, edge_dim,
                                      mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                                      predictor_n_hiddens, predictor_n_layers, n_outputs).to(device=device, dtype=datatype)
             elif customgcn_convolutional_layer_name == "GATv2Conv":
@@ -430,11 +434,19 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
             gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), \
             model, train_losses, val_losses, trained_epochs
 
-def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_epochs):
+def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_epochs, variance_threshold, pca):
     try:
+        if model is None:
+            raise ValueError("Please create a model first.")
+        checkpoint_name = sanitize_path_component(checkpoint_name, "checkpoint name")
+        # The fitted transformers are part of the model's contract: reloading the weights without
+        # them silently feeds the model differently-preprocessed inputs.
         checkpoint = {
+            'model_class': type(model).__name__,
             'state_dict': model.state_dict(),
-            'trained_epochs': trained_epochs
+            'trained_epochs': trained_epochs,
+            'variance_threshold': variance_threshold,
+            'pca': pca
         }
         checkpoint_path = os.path.join(working_directory_path, f"{checkpoint_name}_{trained_epochs}.ckpt")
         torch.save(checkpoint, checkpoint_path)
@@ -444,20 +456,25 @@ def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_e
         status = f"Error saving checkpoint: {exc}"
         return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
-def on_load_checkpoint(working_directory_path, checkpoint_file_name, model):
+def on_load_checkpoint(working_directory_path, checkpoint_file_name, model, train_losses, val_losses, trained_epochs, variance_threshold, pca):
     try:
+        if model is None:
+            raise ValueError("Please create a model first, so the checkpoint has an architecture to load into.")
         checkpoint_file_path = os.path.join(working_directory_path, checkpoint_file_name)
         checkpoint = torch.load(checkpoint_file_path, weights_only=False)
+        saved_class = checkpoint.get('model_class')
+        if saved_class is not None and saved_class != type(model).__name__:
+            raise ValueError(f"This checkpoint was saved from a {saved_class} but the current model is a "
+                             f"{type(model).__name__}. Re-create the model with the original architecture first.")
         model.load_state_dict(checkpoint['state_dict'])
-        trained_epochs = checkpoint.get('trained_epochs', 0)
-        train_losses = []
-        val_losses = []
 
         status = f"Checkpoint loaded: {checkpoint_file_name}."
-        return f"<span style='color: green;'>{status}</span>", model, train_losses, val_losses, trained_epochs
+        return f"<span style='color: green;'>{status}</span>", model, [], [], checkpoint.get('trained_epochs', 0), \
+            checkpoint.get('variance_threshold', variance_threshold), checkpoint.get('pca', pca)
     except Exception as exc:
         status = f"Error loading checkpoint: {exc}"
-        return f"<span style='color: red;'>{status}</span>", model, None, None, None
+        # Leave the existing training state untouched - returning None here breaks the next Train click.
+        return f"<span style='color: red;'>{status}</span>", model, train_losses, val_losses, trained_epochs, variance_threshold, pca
 
 loss_fn = torch.nn.BCEWithLogitsLoss()
 def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider):
@@ -478,7 +495,7 @@ def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learnin
 def train(model, dataset, dataloader, device, datatype, optimizer, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.train()
     total_loss = 0.0
-    num_batches = 0
+    num_samples = 0
     need_edge_attr = (gnn_model_tab in ["GAT", "AttentiveFP"]) or (
         gnn_model_tab == "Custom" and customgcn_convolutional_layer_name in [
             "PDNConv", "GENConv", "ResGatedGraphConv", "GATConv", "GATv2Conv", "TransformerConv", "GeneralConv"])
@@ -522,17 +539,18 @@ def train(model, dataset, dataloader, device, datatype, optimizer, gnn_model_tab
         loss = loss_fn(output, y)
         loss.backward()
         optimizer.step()
-        total_loss += torch.sqrt(loss).item()
-        num_batches += 1
+        # Weight by batch size so the epoch loss does not depend on how the final batch is sized.
+        total_loss += loss.item() * y.shape[0]
+        num_samples += y.shape[0]
 
-    return total_loss / num_batches if num_batches > 0 else 0.0
+    return total_loss / num_samples if num_samples > 0 else 0.0
 
 # Define the validation function
 @torch.no_grad()
 def validation(model, dataset, dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.eval()
     total_loss = 0.0
-    num_batches = 0
+    num_samples = 0
     need_edge_attr = (gnn_model_tab in ["GAT", "AttentiveFP"]) or (
         gnn_model_tab == "Custom" and customgcn_convolutional_layer_name in [
             "PDNConv", "GENConv", "ResGatedGraphConv", "GATConv", "GATv2Conv", "TransformerConv", "GeneralConv"])
@@ -574,10 +592,10 @@ def validation(model, dataset, dataloader, device, datatype, gnn_model_tab, cust
 
             # Compute loss
             loss = loss_fn(output, y)
-            total_loss += torch.sqrt(loss).item()
-        num_batches += 1
+            total_loss += loss.item() * y.shape[0]
+        num_samples += y.shape[0]
 
-    return total_loss / num_batches if num_batches > 0 else 0.0
+    return total_loss / num_samples if num_samples > 0 else 0.0
 
 def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca, progress=gr.Progress()):
     # Training loop
@@ -596,7 +614,7 @@ def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype,
     plt.plot(train_losses, label='Train loss')
     plt.plot(val_losses, label='Validation loss')
     plt.xlabel('Epoch')
-    plt.ylabel('sqrt(BCE with logits loss)')
+    plt.ylabel('BCE with logits loss')
     plt.legend()
     plt.grid(True)
     plt.close()
@@ -606,13 +624,20 @@ def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype,
     return f"<span style='color: green;'>{status}</span>", figure, export_losses_button, trained_epochs, train_losses, val_losses
 
 def on_export_losses(working_directory_path, file_name, train_losses, val_losses):
-    df = pd.DataFrame()
-    df['train_losses'] = train_losses
-    df['val_losses'] = val_losses
-    file_path = os.path.join(working_directory_path, f"{file_name}.csv")
-    df.to_csv(file_path)
-    status = f"Losses exported to {file_name}.csv."
-    return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    try:
+        if not train_losses:
+            raise ValueError("Please train the model first.")
+        file_name = sanitize_path_component(file_name, "file name")
+        df = pd.DataFrame()
+        df['train_losses'] = train_losses
+        df['val_losses'] = val_losses
+        file_path = os.path.join(working_directory_path, f"{file_name}.csv")
+        df.to_csv(file_path, index_label='epoch')
+        status = f"Losses exported to {file_name}.csv."
+        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    except Exception as exc:
+        status = f"Error exporting losses: {exc}"
+        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
 # Define the test function
 @torch.no_grad()
@@ -670,75 +695,101 @@ def test(model, dataset, dataloader, device, datatype, gnn_model_tab, customgcn_
     return y_test, logits, smiles_list
 
 def on_target_column_change(eval_df, target_column):
-    if eval_df is None or eval_df.empty:
+    if eval_df is None or eval_df.empty or target_column is None:
         return None, None, None
-    
-    # Evaluate the model using different metrics
-    y_test_target = eval_df[target_column].to_numpy()
-    y_pred_target = eval_df[f"{target_column} (Prediction)"].to_numpy()
-    y_prob_target = eval_df[f"{target_column} (Probability)"].to_numpy()
-    cm = confusion_matrix(y_test_target, y_pred_target)
-    display = ConfusionMatrixDisplay(confusion_matrix=cm)
-    cm_figure, ax = plt.subplots(figsize=(6, 6))
-    display.plot(cmap=plt.cm.Blues, ax=ax, xticks_rotation='vertical')
-    ax.set_title('Confusion Matrix')
 
-    accuracy = round(accuracy_score(y_test_target, y_pred_target), 4)
-    precision = round(precision_score(y_test_target, y_pred_target), 4)
-    recall = round(recall_score(y_test_target, y_pred_target), 4)
-    f1 = round(f1_score(y_test_target, y_pred_target), 4)
-    TN = cm[0, 0] if cm.shape[0] > 1 else 0
-    FP = cm[0, 1] if cm.shape[1] > 1 else 0
-    specificity = TN / (TN + FP) if (TN + FP) > 0 else 0.0
-    roc_auc = roc_auc_score(y_test_target, y_prob_target)
+    try:
+        # Evaluate the model using different metrics
+        y_test_target = eval_df[target_column].to_numpy()
+        y_pred_target = eval_df[f"{target_column} (Prediction)"].to_numpy()
+        y_prob_target = eval_df[f"{target_column} (Probability)"].to_numpy()
+        cm = confusion_matrix(y_test_target, y_pred_target, labels=[0, 1])
+        display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1])
+        cm_figure, ax = plt.subplots(figsize=(6, 6))
+        display.plot(cmap=plt.cm.Blues, ax=ax, xticks_rotation='vertical')
+        ax.set_title('Confusion Matrix')
+        plt.close(cm_figure)
 
-    metrics_df = pd.DataFrame({
-        'Metric': ['Accuracy', 'Precision', 'Recall', 'Specificity', 'F1 score', 'ROC-AUC score'],
-        'Value': [accuracy, precision, recall, specificity, f1, roc_auc]
-    })
+        accuracy = round(accuracy_score(y_test_target, y_pred_target), 4)
+        precision = round(precision_score(y_test_target, y_pred_target, zero_division=0), 4)
+        recall = round(recall_score(y_test_target, y_pred_target, zero_division=0), 4)
+        f1 = round(f1_score(y_test_target, y_pred_target, zero_division=0), 4)
+        TN = cm[0, 0]
+        FP = cm[0, 1]
+        specificity = round(TN / (TN + FP), 4) if (TN + FP) > 0 else 0.0
 
-    # Generate ROC curve values using probabilities
-    fpr, tpr, _ = roc_curve(y_test_target, y_prob_target)
-    roc_auc_val = auc(fpr, tpr)
+        # ROC-AUC and the ROC curve are undefined when the test split holds a single class.
+        single_class = len(set(y_test_target.tolist())) < 2
+        roc_auc = float('nan') if single_class else round(roc_auc_score(y_test_target, y_prob_target), 4)
 
-    # Plotting the ROC curve
-    roc_auc_figure = plt.figure(figsize=(6, 6))
-    plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % roc_auc_val)
-    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.0])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('Receiver Operating Characteristic')
-    plt.legend(loc="lower right")
+        metrics_df = pd.DataFrame({
+            'Metric': ['Accuracy', 'Precision', 'Recall', 'Specificity', 'F1 score', 'ROC-AUC score'],
+            'Value': [accuracy, precision, recall, specificity, f1, roc_auc]
+        })
 
-    return metrics_df, cm_figure, roc_auc_figure
+        roc_auc_figure = plt.figure(figsize=(6, 6))
+        if single_class:
+            plt.text(0.5, 0.5, 'ROC curve unavailable:\nthe test split contains a single class',
+                     ha='center', va='center')
+            plt.axis('off')
+        else:
+            # Generate ROC curve values using probabilities
+            fpr, tpr, _ = roc_curve(y_test_target, y_prob_target)
+            roc_auc_val = auc(fpr, tpr)
+            plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % roc_auc_val)
+            plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+            plt.xlim([0.0, 1.0])
+            plt.ylim([0.0, 1.0])
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title('Receiver Operating Characteristic')
+            plt.legend(loc="lower right")
+        plt.close(roc_auc_figure)
+
+        return metrics_df, cm_figure, roc_auc_figure
+    except Exception as exc:
+        gr.Warning(f"Error computing metrics for '{target_column}': {exc}")
+        return None, None, None
 
 def on_evaluate(model, dataset, test_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
-    # Get test predictions
-    y_test, logits, smiles_list = test(model, dataset, test_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
-    probabilities = torch.sigmoid(logits)
-    y_test_np = y_test.int().detach().numpy()
-    y_pred_np = torch.round(probabilities).int().detach().numpy()
-    
-    probabilities_np = probabilities.detach().numpy()
-    eval_df = pd.DataFrame()
-    eval_df['SMILES'] = smiles_list
-    for col_idx, col_name in enumerate(dataset.target_column_names):
-        eval_df[col_name] = y_test_np[:, col_idx].tolist()
-        eval_df[f"{col_name} (Prediction)"] = y_pred_np[:, col_idx].tolist()
-        eval_df[f"{col_name} (Probability)"] = probabilities_np[:, col_idx].tolist()
+    try:
+        if model is None or test_dataloader is None:
+            raise ValueError("Please process the data and create a model first.")
+        # Get test predictions
+        y_test, logits, smiles_list = test(model, dataset, test_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
+        if logits.numel() == 0:
+            raise ValueError("The test split is empty. Please lower the validation size or raise the test size.")
+        probabilities = torch.sigmoid(logits.float())
+        y_test_np = y_test.int().detach().numpy()
+        y_pred_np = torch.round(probabilities).int().detach().numpy()
 
-    status = f"Evaluation completed."
+        probabilities_np = probabilities.detach().numpy()
+        eval_df = pd.DataFrame()
+        eval_df['SMILES'] = smiles_list
+        for col_idx, col_name in enumerate(dataset.target_column_names):
+            eval_df[col_name] = y_test_np[:, col_idx].tolist()
+            eval_df[f"{col_name} (Prediction)"] = y_pred_np[:, col_idx].tolist()
+            eval_df[f"{col_name} (Probability)"] = probabilities_np[:, col_idx].tolist()
 
-    return f"<span style='color: green;'>{status}</span>", eval_df, gr.update(interactive=True)
+        status = f"Evaluation completed."
+
+        return f"<span style='color: green;'>{status}</span>", eval_df, gr.update(interactive=True)
+    except Exception as exc:
+        status = f"Error evaluating model: {exc}"
+        return f"<span style='color: red;'>{status}</span>", None, gr.update(interactive=False)
 
 def on_export_evaluation(working_directory_path, file_name, eval_df):
-    file_path = os.path.join(working_directory_path, f"{file_name}.csv")
-    eval_df.to_csv(file_path)
-    status = f"Evaluation exported: {file_name}.csv"
-
-    return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    try:
+        if eval_df is None:
+            raise ValueError("Please run an evaluation first.")
+        file_name = sanitize_path_component(file_name, "file name")
+        file_path = os.path.join(working_directory_path, f"{file_name}.csv")
+        eval_df.to_csv(file_path, index=False)
+        status = f"Evaluation exported: {file_name}.csv"
+        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    except Exception as exc:
+        status = f"Error exporting evaluation: {exc}"
+        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
 def on_process_prediction_data(working_directory_path, prediction_dataset_file, dataset, prediction_graph_directory, prediction_molecular_fingerprint_directory, datatype, batch_size):
     try:
@@ -805,25 +856,41 @@ def predict(model, dataset, dataloader, device, datatype, gnn_model_tab, customg
     return smiles_list, logits
 
 def on_predict(model, dataset, prediction_dataset, predict_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
-    # Get predictions
-    smiles_list, logits = predict(model, prediction_dataset, predict_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
-    probabilities = torch.sigmoid(logits)
-    y_pred_np = torch.round(probabilities).int().detach().numpy()
-    
-    prediction_df = pd.DataFrame()
-    prediction_df['SMILES'] = smiles_list
-    for col_idx, col_name in enumerate(dataset.target_column_names):
-        prediction_df[f"{col_name} (Prediction)"] = y_pred_np[:, col_idx].tolist()
+    try:
+        if model is None or predict_dataloader is None:
+            raise ValueError("Please process the prediction data first.")
+        # Get predictions
+        smiles_list, logits = predict(model, prediction_dataset, predict_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
+        if logits.numel() == 0:
+            raise ValueError("The prediction dataset is empty.")
+        probabilities = torch.sigmoid(logits.float())
+        y_pred_np = torch.round(probabilities).int().detach().numpy()
 
-    status = f"Prediction completed."
+        prediction_df = pd.DataFrame()
+        prediction_df['SMILES'] = smiles_list
+        for col_idx, col_name in enumerate(dataset.target_column_names):
+            prediction_df[f"{col_name} (Prediction)"] = y_pred_np[:, col_idx].tolist()
+            prediction_df[f"{col_name} (Probability)"] = probabilities[:, col_idx].detach().numpy().tolist()
 
-    return f"<span style='color: green;'>{status}</span>", prediction_df, gr.update(interactive=True)
+        status = f"Prediction completed."
+
+        return f"<span style='color: green;'>{status}</span>", prediction_df, gr.update(interactive=True)
+    except Exception as exc:
+        status = f"Error making prediction: {exc}"
+        return f"<span style='color: red;'>{status}</span>", None, gr.update(interactive=False)
 
 def on_export_prediction(working_directory_path, prediction_file_name, prediction_df):
-    prediction_file_path = os.path.join(working_directory_path, f"{prediction_file_name}.csv")
-    prediction_df.to_csv(prediction_file_path)
-    status = f"Predictions exported: {prediction_file_name}.csv"
-    return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    try:
+        if prediction_df is None:
+            raise ValueError("Please make a prediction first.")
+        prediction_file_name = sanitize_path_component(prediction_file_name, "file name")
+        prediction_file_path = os.path.join(working_directory_path, f"{prediction_file_name}.csv")
+        prediction_df.to_csv(prediction_file_path, index=False)
+        status = f"Predictions exported: {prediction_file_name}.csv"
+        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    except Exception as exc:
+        status = f"Error exporting predictions: {exc}"
+        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
 def binary_classification_tab_content():
     with gr.Tab("Binary Classification") as binary_classification_tab:
@@ -1056,8 +1123,9 @@ def binary_classification_tab_content():
                                                 mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                                                 predictor_n_hiddens, predictor_n_layers],
                                                 [status_html, model_summary_textarea, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, model_state, train_losses_state, val_losses_state, trained_epochs_state])
-    save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state], [status_html, working_directory_content_list_state])
-    load_checkpoint_button.click(on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state], [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state])
+    save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, variance_threshold_state, pca_state], [status_html, working_directory_content_list_state])
+    load_checkpoint_button.click(on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state],
+                                 [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state])
     
     # Train model interactions
     create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [status_html, optimizer_state, schedular_state, train_button])

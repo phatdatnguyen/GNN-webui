@@ -5,7 +5,10 @@ A Gradio web app for molecular property prediction with graph neural networks (G
 
 ## Installation
 
-- Install [Python 3.11](https://www.python.org/downloads/) (other versions may not be compatible):
+- Install [Python 3.11](https://www.python.org/downloads/) (other versions may not be compatible)
+
+- `deepchem` 2.8.0 or newer is required: the `PagtnMolGraphFeaturizer` and `DMPNNFeaturizer` options
+  do not exist in older releases.
   
 - Install [Git](https://git-scm.com/)
 
@@ -24,15 +27,6 @@ python -m venv gnn-env
 gnn-env\Scripts\activate
 ```
 
-**Linux**
-```
-cd gnn-webui
-python3 -m venv gnn-env
-source gnn-env/bin/activate
-```
-
-- Install [CUDA Toolkit 12.8](https://developer.nvidia.com/cuda-12-8-1-download-archive) (newer versions are not supported yet):
-  
 
 - Install packages:
 
@@ -46,14 +40,57 @@ Install other packages:
 
 ```
 pip install -r requirements.txt
-
 pip install pyg_lib torch_scatter torch_sparse torch_cluster -f https://data.pyg.org/whl/torch-2.9.1+cu128.html
 
 ```
 
+**Linux**
+```
+cd gnn-webui
+python3 -m venv gnn-env
+source gnn-env/bin/activate
+```
+- Install packages:
+
+Install [PyTorch](https://pytorch.org/) with CUDA version 13.2
+
+```
+pip install torch==2.12.0 --index-url https://download.pytorch.org/whl/cu132
+```
+
+Install other packages:
+
+```
+pip install -r requirements.txt
+pip install pyg_lib torch_scatter torch_sparse -f https://data.pyg.org/whl/torch-2.12.0+cu132.html
+
+```
 ## Start web UI
 To start the web UI:
 
 ```
 python webui.py
+```
+
+## Tests
+
+Install the test dependencies, then run the suite from the repo root:
+
+```
+pip install -r requirements-dev.txt
+pytest
+```
+
+The 3D tests need conformer generation, which is the slow part. To skip them:
+
+```
+pytest -m "not slow"
+```
+
+Useful selections:
+
+```
+pytest tests/test_models.py          # every architecture, at every layer count
+pytest tests/test_handlers.py        # the Gradio callbacks end to end
+pytest -k checkpoint                 # one topic across all files
 ```

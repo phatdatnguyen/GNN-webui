@@ -1,0 +1,571 @@
+"""Tests for the Gradio callbacks in binary_classification.py and regression.py.
+
+These are the functions wired to buttons, so they return status HTML plus component
+updates rather than raising. The tests assert on that contract.
+"""
+import os
+
+import numpy as np
+import pandas as pd
+import pytest
+import torch
+
+import binary_classification as bc
+import regression as rg
+from conftest import FakeProgress, SMILES, create_model_args, is_error, is_ok
+
+
+def process_classification(workdir, load_data="Both", dimensionality_reduction=False,
+                           test_ratio=0.25, val_ratio=0.25, batch_size=4):
+    return bc.on_process_data(
+        workdir, "dataset.csv", load_data, "graphs", "fps", torch.float32,
+        dimensionality_reduction, 0.0, 4, test_ratio, val_ratio, batch_size, 0,
+    )
+
+
+def process_regression(workdir, load_data="Both", dimensionality_reduction=False):
+    return rg.on_process_data(
+        workdir, "dataset.csv", load_data, "graphs", "fps", torch.float32,
+        dimensionality_reduction, 0.0, 4, 0.25, 0.25, 4, 0,
+    )
+
+
+@pytest.fixture
+def trained_classifier(classification_workdir):
+    """A trained GCNConv classifier plus everything needed to evaluate it."""
+    status, _, _, dataset, train_dl, val_dl, test_dl, vt, pca = process_classification(
+        classification_workdir)
+    assert is_ok(status), status
+
+    result = bc.on_create_model(*create_model_args(dataset, "Custom", vt, pca))
+    assert is_ok(result[0]), result[0]
+    model, train_losses, val_losses, trained_epochs = result[-4:]
+
+    _, optimizer, scheduler, _ = bc.on_create_optimizer(model, "Adam", 0.01, 0.99)
+    status, _, _, trained_epochs, train_losses, val_losses = bc.on_train(
+        model, dataset, train_dl, val_dl, "cpu", torch.float32, optimizer, scheduler, 2,
+        trained_epochs, train_losses, val_losses, "Custom", "GCNConv", vt, pca, FakeProgress())
+    assert is_ok(status), status
+
+    return dict(workdir=classification_workdir, dataset=dataset, model=model,
+                train_dl=train_dl, test_dl=test_dl, vt=vt, pca=pca,
+                train_losses=train_losses, val_losses=val_losses,
+                trained_epochs=trained_epochs)
+
+
+# ----------------------------------------------------------------------- data processing
+
+@pytest.mark.parametrize("load_data", ["Graphs", "Molecular fingerprints", "Both"])
+def test_process_data_succeeds_for_each_input_mode(classification_workdir, load_data):
+    status, create_btn, target_dd, dataset, train_dl, val_dl, test_dl, vt, pca = \
+        process_classification(classification_workdir, load_data)
+
+    assert is_ok(status)
+    assert f"{len(SMILES)} molecules" in status
+    assert dataset.load_data == load_data
+    assert all(dl is not None for dl in (train_dl, val_dl, test_dl))
+
+
+def test_process_data_splits_add_up(classification_workdir):
+    _, _, _, dataset, train_dl, val_dl, test_dl = process_classification(
+        classification_workdir, test_ratio=0.25, val_ratio=0.25)[:7]
+    total = sum(len(dl.dataset) for dl in (train_dl, val_dl, test_dl))
+    assert total == len(dataset)
+    assert len(test_dl.dataset) == int(len(dataset) * 0.25)
+
+
+def test_process_data_is_reproducible_for_a_fixed_seed(classification_workdir):
+    first = process_classification(classification_workdir)[4].dataset.indices
+    second = process_classification(classification_workdir)[4].dataset.indices
+    assert list(first) == list(second)
+
+
+def test_process_data_rejects_non_binary_targets(classification_workdir):
+    path = os.path.join(classification_workdir, "dataset.csv")
+    df = pd.read_csv(path)
+    df["target"] = range(len(df))
+    df.to_csv(path, index=False)
+
+    status = process_classification(classification_workdir)[0]
+    assert is_error(status) and "not binary" in status
+
+
+def test_regression_rejects_non_numeric_targets(regression_workdir):
+    path = os.path.join(regression_workdir, "dataset.csv")
+    df = pd.read_csv(path)
+    df["value"] = ["a"] * len(df)
+    df.to_csv(path, index=False)
+
+    status = process_regression(regression_workdir)[0]
+    assert is_error(status) and "not numeric" in status
+
+
+def test_process_data_rejects_a_dataset_with_no_targets(classification_workdir):
+    path = os.path.join(classification_workdir, "dataset.csv")
+    pd.read_csv(path)[["SMILES"]].to_csv(path, index=False)
+
+    status = process_classification(classification_workdir)[0]
+    assert is_error(status) and "No target columns" in status
+
+
+def test_process_data_rejects_an_empty_training_split(classification_workdir):
+    status = process_classification(classification_workdir, test_ratio=0.6, val_ratio=0.6)[0]
+    assert is_error(status) and "split" in status.lower()
+
+
+def test_process_data_error_path_disables_the_create_button(classification_workdir):
+    """Regression: the failure path used to return None into component slots."""
+    path = os.path.join(classification_workdir, "dataset.csv")
+    pd.read_csv(path)[["SMILES"]].to_csv(path, index=False)
+
+    status, create_btn, target_dd = process_classification(classification_workdir)[:3]
+    assert is_error(status)
+    assert create_btn is not None and create_btn.get("interactive") is False
+    assert target_dd is not None
+
+
+def test_dimensionality_reduction_is_fitted_when_fingerprints_are_loaded(classification_workdir):
+    _, _, _, _, _, _, _, vt, pca = process_classification(
+        classification_workdir, "Both", dimensionality_reduction=True)
+    assert vt is not None and pca is not None
+    assert pca.n_components_ == 4
+
+
+def test_stale_dimensionality_reduction_flag_is_ignored_without_fingerprints(classification_workdir):
+    """Regression: the checkbox is only hidden - not reset - when switching to Graphs, and
+    the handler then tried to read a fingerprint file that may not exist."""
+    status, _, _, _, _, _, _, vt, pca = process_classification(
+        classification_workdir, "Graphs", dimensionality_reduction=True)
+    assert is_ok(status)
+    assert vt is None and pca is None
+
+
+def test_dimensionality_reduction_is_fitted_on_the_training_split_only(classification_workdir):
+    """Fitting PCA on the whole dataset would leak test information into training."""
+    _, _, _, dataset, train_dl, _, _, vt, pca = process_classification(
+        classification_workdir, "Both", dimensionality_reduction=True)
+    assert pca.n_samples_ == len(train_dl.dataset)
+
+
+# ------------------------------------------------------------------------ model creation
+
+@pytest.mark.parametrize("tab", ["GCN", "GraphSAGE", "GIN", "GAT", "EdgeCNN", "AttentiveFP"])
+def test_create_model_for_each_architecture(classification_workdir, tab):
+    dataset = process_classification(classification_workdir)[3]
+    result = bc.on_create_model(*create_model_args(dataset, tab))
+    assert is_ok(result[0]), result[0]
+    assert result[-4] is not None
+    assert result[1]                       # a model summary string
+
+
+@pytest.mark.parametrize("layer", ["GCNConv", "ChebConv", "GATConv", "TransformerConv", "PDNConv"])
+@pytest.mark.parametrize("n_layers", [1, 3])
+def test_create_custom_model_at_every_layer_count(classification_workdir, layer, n_layers):
+    dataset = process_classification(classification_workdir)[3]
+    result = bc.on_create_model(*create_model_args(
+        dataset, "Custom", customgcn_convolutional_layer_name=layer,
+        customgcn_n_layers=n_layers))
+    assert is_ok(result[0]), result[0]
+
+
+def test_create_model_resets_training_state(classification_workdir):
+    dataset = process_classification(classification_workdir)[3]
+    result = bc.on_create_model(*create_model_args(dataset, "GCN"))
+    model, train_losses, val_losses, trained_epochs = result[-4:]
+    assert train_losses == [] and val_losses == [] and trained_epochs == 0
+
+
+def test_create_model_reports_failure_instead_of_raising(classification_workdir):
+    """Both output widths at zero is a configuration the sliders allow."""
+    dataset = process_classification(classification_workdir)[3]
+    result = bc.on_create_model(*create_model_args(
+        dataset, "GCN", gcn_n_outputs=0, mlp_n_outputs=0))
+    assert is_error(result[0])
+    assert result[-4] is None
+
+
+def test_fingerprint_only_mode_builds_an_mlp(classification_workdir):
+    dataset = process_classification(classification_workdir, "Molecular fingerprints")[3]
+    result = bc.on_create_model(*create_model_args(dataset, "GCN"))
+    assert is_ok(result[0]), result[0]
+    assert type(result[-4]).__name__ == "MLPModel"
+
+
+def test_model_input_width_follows_pca_when_enabled(classification_workdir):
+    _, _, _, dataset, _, _, _, vt, pca = process_classification(
+        classification_workdir, "Both", dimensionality_reduction=True)
+    result = bc.on_create_model(*create_model_args(dataset, "GCN", vt, pca))
+    assert is_ok(result[0]), result[0]
+    assert result[-4].mlp[0].in_features == pca.n_components_
+
+
+# ------------------------------------------------------------------------------ training
+
+def test_training_records_one_loss_per_epoch(trained_classifier):
+    assert len(trained_classifier["train_losses"]) == 2
+    assert len(trained_classifier["val_losses"]) == 2
+    assert trained_classifier["trained_epochs"] == 2
+    assert all(np.isfinite(trained_classifier["train_losses"]))
+
+
+def test_training_resumes_from_the_existing_epoch_count(trained_classifier):
+    t = trained_classifier
+    _, optimizer, scheduler, _ = bc.on_create_optimizer(t["model"], "Adam", 0.01, 0.99)
+    status, _, _, trained_epochs, train_losses, _ = bc.on_train(
+        t["model"], t["dataset"], t["train_dl"], t["train_dl"], "cpu", torch.float32,
+        optimizer, scheduler, 3, t["trained_epochs"], t["train_losses"], t["val_losses"],
+        "Custom", "GCNConv", t["vt"], t["pca"], FakeProgress())
+
+    assert trained_epochs == 5
+    assert len(train_losses) == 5
+
+
+def test_epoch_loss_is_independent_of_batch_size(classification_workdir):
+    """Regression: the epoch loss was a mean of per-batch losses, so it shifted with the
+    batch size purely because the last batch is short."""
+    losses = []
+    for batch_size in (4, 5):
+        _, _, _, dataset, train_dl, val_dl, _, vt, pca = process_classification(
+            classification_workdir, "Graphs", batch_size=batch_size)
+        torch.manual_seed(0)
+        result = bc.on_create_model(*create_model_args(dataset, "GCN", vt, pca))
+        model = result[-4]
+        losses.append(bc.validation(model, dataset, val_dl, "cpu", torch.float32,
+                                    "GCN", "GCNConv", vt, pca))
+
+    assert losses[0] == pytest.approx(losses[1], rel=1e-4)
+
+
+def test_regression_epoch_loss_is_a_true_rmse(regression_workdir):
+    """sqrt of the mean squared error over the epoch, not a mean of per-batch RMSEs."""
+    _, _, _, dataset, _, val_dl, _, vt, pca, scaler = process_regression(regression_workdir, "Graphs")
+    torch.manual_seed(0)
+    model = rg.on_create_model(*create_model_args(dataset, "GCN", vt, pca))[-4]
+
+    reported = rg.validation(model, dataset, val_dl, "cpu", torch.float32, scaler,
+                             "GCN", "GCNConv", vt, pca)
+
+    squared_error, n = 0.0, 0
+    model.eval()
+    with torch.no_grad():
+        for batch in val_dl:
+            output = model(batch.x.float(), batch.edge_index.long(), batch.batch, None)
+            target = torch.tensor(scaler.transform(batch.y), dtype=torch.float32)
+            squared_error += float(((output - target) ** 2).sum())
+            n += target.numel()
+    assert reported == pytest.approx((squared_error / n) ** 0.5, rel=1e-5)
+
+
+# ---------------------------------------------------------------------------- evaluation
+
+def test_evaluate_produces_one_row_per_test_molecule(trained_classifier):
+    t = trained_classifier
+    status, eval_df, export_btn = bc.on_evaluate(
+        t["model"], t["dataset"], t["test_dl"], "cpu", torch.float32,
+        "Custom", "GCNConv", t["vt"], t["pca"])
+
+    assert is_ok(status)
+    assert len(eval_df) == len(t["test_dl"].dataset)
+    assert list(eval_df.columns) == ["SMILES", "target", "target (Prediction)", "target (Probability)"]
+    assert eval_df["target (Prediction)"].isin([0, 1]).all()
+    assert eval_df["target (Probability)"].between(0, 1).all()
+
+
+def test_evaluate_reports_an_error_without_a_model(trained_classifier):
+    status, eval_df, export_btn = bc.on_evaluate(
+        None, trained_classifier["dataset"], trained_classifier["test_dl"], "cpu",
+        torch.float32, "Custom", "GCNConv", None, None)
+    assert is_error(status) and eval_df is None
+
+
+def test_metrics_are_computed_for_a_normal_split():
+    eval_df = pd.DataFrame({
+        "SMILES": ["CCO", "CCN", "CCC", "CCCl"],
+        "target": [1, 0, 1, 0],
+        "target (Prediction)": [1, 0, 0, 0],
+        "target (Probability)": [0.9, 0.2, 0.4, 0.1],
+    })
+    metrics, cm_figure, roc_figure = bc.on_target_column_change(eval_df, "target")
+
+    assert list(metrics["Metric"]) == ["Accuracy", "Precision", "Recall", "Specificity",
+                                       "F1 score", "ROC-AUC score"]
+    assert metrics.set_index("Metric").loc["Accuracy", "Value"] == pytest.approx(0.75)
+    assert metrics.set_index("Metric").loc["Specificity", "Value"] == pytest.approx(1.0)
+    assert cm_figure is not None and roc_figure is not None
+
+
+def test_metrics_survive_a_single_class_test_split():
+    """Regression: roc_auc_score raises when only one class is present, which used to
+    surface as a raw traceback in the UI."""
+    eval_df = pd.DataFrame({
+        "SMILES": ["CCO", "CCN", "CCC"],
+        "target": [1, 1, 1],
+        "target (Prediction)": [1, 1, 0],
+        "target (Probability)": [0.9, 0.8, 0.4],
+    })
+    metrics, cm_figure, roc_figure = bc.on_target_column_change(eval_df, "target")
+
+    assert metrics is not None
+    assert np.isnan(metrics.set_index("Metric").loc["ROC-AUC score", "Value"])
+    assert cm_figure is not None and roc_figure is not None
+
+
+def test_metrics_handle_predictions_that_never_fire():
+    """precision/recall are undefined with no positive predictions; must not raise."""
+    eval_df = pd.DataFrame({
+        "SMILES": ["CCO", "CCN"],
+        "target": [1, 0],
+        "target (Prediction)": [0, 0],
+        "target (Probability)": [0.4, 0.1],
+    })
+    metrics, _, _ = bc.on_target_column_change(eval_df, "target")
+    assert metrics.set_index("Metric").loc["Precision", "Value"] == 0
+
+
+def test_metrics_return_none_for_empty_input():
+    assert bc.on_target_column_change(None, "target") == (None, None, None)
+    assert bc.on_target_column_change(pd.DataFrame(), "target") == (None, None, None)
+
+
+def test_regression_metrics():
+    eval_df = pd.DataFrame({
+        "SMILES": ["CCO", "CCN", "CCC"],
+        "value": [1.0, 2.0, 3.0],
+        "value (Prediction)": [1.5, 2.0, 2.5],
+    })
+    metrics, scatter = rg.on_target_column_change(eval_df, "value")
+    by_name = metrics.set_index("Metric")["Value"]
+
+    # The handler rounds every metric to 4 decimal places for display.
+    assert by_name["MAE"] == pytest.approx((0.5 + 0.0 + 0.5) / 3, abs=5e-5)
+    assert by_name["MSE"] == pytest.approx((0.25 + 0 + 0.25) / 3, abs=5e-5)
+    assert by_name["RMSE"] == pytest.approx(((0.25 + 0 + 0.25) / 3) ** 0.5, abs=5e-5)
+    assert by_name["R²"] == pytest.approx(0.75, abs=5e-5)
+    assert scatter is not None
+
+
+def test_regression_r2_is_nan_when_every_target_is_identical():
+    eval_df = pd.DataFrame({
+        "SMILES": ["CCO", "CCN"],
+        "value": [2.0, 2.0],
+        "value (Prediction)": [1.0, 3.0],
+    })
+    metrics, _ = rg.on_target_column_change(eval_df, "value")
+    assert np.isnan(metrics.set_index("Metric").loc["R²", "Value"])
+
+
+# --------------------------------------------------------------------------- checkpoints
+
+def test_checkpoint_round_trip_restores_weights(trained_classifier):
+    t = trained_classifier
+    status, _ = bc.on_save_checkpoint(t["workdir"], "ckpt", t["model"], t["trained_epochs"],
+                                      t["vt"], t["pca"])
+    assert is_ok(status)
+    assert os.path.exists(os.path.join(t["workdir"], f"ckpt_{t['trained_epochs']}.ckpt"))
+
+    before = {k: v.clone() for k, v in t["model"].state_dict().items()}
+    for parameter in t["model"].parameters():
+        with torch.no_grad():
+            parameter.add_(1.0)
+
+    status, model, train_losses, val_losses, trained_epochs, vt, pca = bc.on_load_checkpoint(
+        t["workdir"], f"ckpt_{t['trained_epochs']}.ckpt", t["model"],
+        t["train_losses"], t["val_losses"], t["trained_epochs"], None, None)
+
+    assert is_ok(status)
+    assert trained_epochs == t["trained_epochs"]
+    for key, value in model.state_dict().items():
+        assert torch.allclose(value, before[key])
+
+
+def test_checkpoint_carries_the_fitted_transformers(classification_workdir):
+    """Regression: only weights were saved, so a reloaded model silently received
+    differently-preprocessed inputs."""
+    _, _, _, dataset, _, _, _, vt, pca = process_classification(
+        classification_workdir, "Both", dimensionality_reduction=True)
+    model = bc.on_create_model(*create_model_args(dataset, "GCN", vt, pca))[-4]
+
+    bc.on_save_checkpoint(classification_workdir, "ckpt", model, 0, vt, pca)
+    _, _, _, _, _, restored_vt, restored_pca = bc.on_load_checkpoint(
+        classification_workdir, "ckpt_0.ckpt", model, [], [], 0, None, None)
+
+    assert restored_vt is not None and restored_pca is not None
+    assert restored_pca.n_components_ == pca.n_components_
+    assert np.allclose(restored_pca.components_, pca.components_)
+
+
+def test_regression_checkpoint_carries_the_output_scaler(regression_workdir):
+    """Without the scaler every prediction comes back denormalised on the wrong scale."""
+    _, _, _, dataset, _, _, _, vt, pca, scaler = process_regression(regression_workdir, "Graphs")
+    model = rg.on_create_model(*create_model_args(dataset, "GCN", vt, pca))[-4]
+
+    rg.on_save_checkpoint(regression_workdir, "ckpt", model, 0, vt, pca, scaler)
+    result = rg.on_load_checkpoint(regression_workdir, "ckpt_0.ckpt", model, [], [], 0,
+                                   None, None, None)
+    restored_scaler = result[-1]
+
+    assert restored_scaler is not None
+    assert np.allclose(restored_scaler.data_min_, scaler.data_min_)
+    assert np.allclose(restored_scaler.data_max_, scaler.data_max_)
+
+
+def test_loading_into_a_different_architecture_is_rejected(classification_workdir):
+    """Regression: a mismatched load either crashed or half-applied silently."""
+    dataset = process_classification(classification_workdir)[3]
+    gcn = bc.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    gat = bc.on_create_model(*create_model_args(dataset, "GAT"))[-4]
+
+    bc.on_save_checkpoint(classification_workdir, "ckpt", gcn, 7, None, None)
+    status, model, train_losses, val_losses, trained_epochs, _, _ = bc.on_load_checkpoint(
+        classification_workdir, "ckpt_7.ckpt", gat, [0.5], [0.6], 3, None, None)
+
+    assert is_error(status)
+    assert "GCNModel" in status
+    assert train_losses == [0.5] and val_losses == [0.6] and trained_epochs == 3
+
+
+def test_failed_load_preserves_training_state(classification_workdir):
+    """Regression: the error path returned None, so the next Train click crashed on
+    range(None, ...)."""
+    dataset = process_classification(classification_workdir)[3]
+    model = bc.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+
+    status, _, train_losses, val_losses, trained_epochs, _, _ = bc.on_load_checkpoint(
+        classification_workdir, "does_not_exist.ckpt", model, [0.1, 0.2], [0.3, 0.4], 9,
+        None, None)
+
+    assert is_error(status)
+    assert train_losses == [0.1, 0.2] and val_losses == [0.3, 0.4] and trained_epochs == 9
+
+
+def test_save_checkpoint_rejects_an_unsafe_name(trained_classifier):
+    t = trained_classifier
+    status, _ = bc.on_save_checkpoint(t["workdir"], "../escape", t["model"], 1, None, None)
+    assert is_error(status)
+    assert not os.path.exists(os.path.join(os.path.dirname(t["workdir"]), "escape_1.ckpt"))
+
+
+def test_save_checkpoint_without_a_model_reports_an_error(classification_workdir):
+    status, _ = bc.on_save_checkpoint(classification_workdir, "ckpt", None, 0, None, None)
+    assert is_error(status)
+
+
+# -------------------------------------------------------------------------- prediction
+
+def test_prediction_covers_every_input_molecule(trained_classifier):
+    t = trained_classifier
+    status, prediction_dataset, dataloader, predict_btn = bc.on_process_prediction_data(
+        t["workdir"], "dataset.csv", t["dataset"], "graphs", "fps", torch.float32, 4)
+    assert is_ok(status)
+
+    status, prediction_df, export_btn = bc.on_predict(
+        t["model"], t["dataset"], prediction_dataset, dataloader, "cpu", torch.float32,
+        "Custom", "GCNConv", t["vt"], t["pca"])
+
+    assert is_ok(status)
+    assert len(prediction_df) == len(SMILES)
+    assert prediction_df["SMILES"].tolist() == SMILES
+    assert prediction_df["target (Prediction)"].isin([0, 1]).all()
+
+
+def test_predict_without_data_reports_an_error(trained_classifier):
+    t = trained_classifier
+    status, prediction_df, _ = bc.on_predict(
+        t["model"], t["dataset"], None, None, "cpu", torch.float32,
+        "Custom", "GCNConv", t["vt"], t["pca"])
+    assert is_error(status) and prediction_df is None
+
+
+def test_regression_predict_without_a_scaler_reports_an_error(regression_workdir):
+    _, _, _, dataset, _, _, test_dl, vt, pca, scaler = process_regression(regression_workdir, "Graphs")
+    model = rg.on_create_model(*create_model_args(dataset, "GCN", vt, pca))[-4]
+
+    status, prediction_df, _ = rg.on_predict(model, dataset, dataset, test_dl, "cpu",
+                                             torch.float32, None, "GCN", "GCNConv", vt, pca)
+    assert is_error(status) and prediction_df is None
+
+
+# ------------------------------------------------------------------------------- exports
+
+def test_export_losses_writes_a_csv(trained_classifier):
+    t = trained_classifier
+    status, _ = bc.on_export_losses(t["workdir"], "losses", t["train_losses"], t["val_losses"])
+    assert is_ok(status)
+
+    df = pd.read_csv(os.path.join(t["workdir"], "losses.csv"))
+    assert list(df.columns) == ["epoch", "train_losses", "val_losses"]
+    assert len(df) == len(t["train_losses"])
+
+
+def test_export_losses_before_training_reports_an_error(classification_workdir):
+    status, _ = bc.on_export_losses(classification_workdir, "losses", [], [])
+    assert is_error(status)
+
+
+@pytest.mark.parametrize("name", ["../escape", "/etc/passwd", ".."])
+def test_exports_reject_unsafe_file_names(trained_classifier, name):
+    t = trained_classifier
+    status, _ = bc.on_export_losses(t["workdir"], name, t["train_losses"], t["val_losses"])
+    assert is_error(status)
+
+
+def test_export_evaluation_writes_the_dataframe(trained_classifier):
+    t = trained_classifier
+    _, eval_df, _ = bc.on_evaluate(t["model"], t["dataset"], t["test_dl"], "cpu",
+                                   torch.float32, "Custom", "GCNConv", t["vt"], t["pca"])
+    status, _ = bc.on_export_evaluation(t["workdir"], "evaluation", eval_df)
+    assert is_ok(status)
+
+    written = pd.read_csv(os.path.join(t["workdir"], "evaluation.csv"))
+    assert list(written.columns) == list(eval_df.columns)
+    assert len(written) == len(eval_df)
+
+
+def test_export_without_data_reports_an_error(classification_workdir):
+    assert is_error(bc.on_export_evaluation(classification_workdir, "evaluation", None)[0])
+    assert is_error(bc.on_export_prediction(classification_workdir, "prediction", None)[0])
+
+
+# ------------------------------------------------------------- working directory listing
+
+def test_working_directory_listing_sorts_newest_first(classification_workdir):
+    """Regression: rows were sorted on the ctime string, which orders by weekday name."""
+    old = os.path.join(classification_workdir, "old.csv")
+    new = os.path.join(classification_workdir, "new.csv")
+    pd.DataFrame({"SMILES": ["CCO"]}).to_csv(old, index=False)
+    pd.DataFrame({"SMILES": ["CCO"]}).to_csv(new, index=False)
+    os.utime(old, (1_000_000_000, 1_000_000_000))     # 2001
+    os.utime(new, (1_900_000_000, 1_900_000_000))     # 2030
+
+    contents_df = bc.on_content_list_change(classification_workdir, "dataset",
+                                            "graphs", "fps", "checkpoint")[0]
+    order = contents_df["File"].tolist()
+    assert order.index("new.csv") < order.index("old.csv")
+
+
+def test_working_directory_listing_classifies_entries(classification_workdir):
+    open(os.path.join(classification_workdir, "model.ckpt"), "w").close()
+    contents_df = bc.on_content_list_change(classification_workdir, "dataset",
+                                            "graphs", "fps", "checkpoint")[0]
+    by_name = contents_df.set_index("File")["Type"]
+
+    assert by_name["graphs"] == "Directory"
+    assert by_name["dataset.csv"] == "Data file"
+    assert by_name["model.ckpt"] == "Checkpoint file"
+
+
+def test_open_working_directory_rejects_traversal(tmp_path, monkeypatch):
+    monkeypatch.setattr(bc, "DATA_DIR", str(tmp_path / "Data"))
+    result = bc.on_open_working_directory("../escape")
+
+    assert result[-2] is None                      # no working directory path handed back
+    assert not (tmp_path / "escape").exists()
+
+
+def test_open_working_directory_creates_the_directory(tmp_path, monkeypatch):
+    data_dir = tmp_path / "Data"
+    monkeypatch.setattr(bc, "DATA_DIR", str(data_dir))
+    result = bc.on_open_working_directory("my_run")
+
+    assert result[-2] == os.path.join(str(data_dir), "my_run")
+    assert (data_dir / "my_run").is_dir()

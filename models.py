@@ -2,6 +2,13 @@ import torch
 from torch.nn import Linear, ModuleList, BatchNorm1d
 from torch_geometric.nn import GCN, GraphSAGE, GIN, GAT, EdgeCNN, AttentiveFP, GCNConv, SAGEConv, SGConv, ClusterGCNConv, GraphConv, ChebConv, LEConv, EGConv, MFConv, FeaStConv, TAGConv, ARMAConv, FiLMConv, PDNConv, GENConv, ResGatedGraphConv, GATConv, GATv2Conv, SuperGATConv, TransformerConv, GeneralConv, global_mean_pool
 
+# Chebyshev filter size for ChebConv. It has no dedicated UI control, so it is fixed here.
+CHEB_CONV_K = 3
+
+def _edge_dim_or_none(edge_dim):
+    # Layers that take an optional edge_dim expect None (not 0) when there are no edge features.
+    return edge_dim if edge_dim else None
+
 class MLPModel(torch.nn.Module):
     def __init__(
         self,
@@ -15,11 +22,14 @@ class MLPModel(torch.nn.Module):
     ):
         super().__init__()
 
+        if n_mlp_outputs == 0:
+            raise ValueError("The output size of the MLP module cannot be 0!")
+
         self.mlp = ModuleList([
             Linear(n_mlp_inputs, n_mlp_hiddens),
             *[Linear(n_mlp_hiddens, n_mlp_hiddens) for _ in range(1, n_mlp_layers)],
             Linear(n_mlp_hiddens, n_mlp_outputs)
-        ]) if n_mlp_outputs > 0 else None
+        ])
 
         predictor_input_dim = n_mlp_outputs
         self.predictor = ModuleList([
@@ -84,7 +94,8 @@ class GCNModel(torch.nn.Module):
         h1 = None
         h2 = None
         if self.n_gcn_outputs > 0:
-            h1 = self.gcn(x, edge_index, None, batch_index)
+            # BasicGNN.forward is (x, edge_index, edge_weight, edge_attr, batch, ...)
+            h1 = self.gcn(x, edge_index, None, None, batch_index)
             h1 = global_mean_pool(h1, batch_index)
 
         if self.mlp:
@@ -231,6 +242,7 @@ class GATModel(torch.nn.Module):
         self,
         n_gcn_inputs: int,
         n_gcn_hiddens: int,
+        edge_dim: int,
         n_gcn_layers: int,
         n_gcn_outputs: int,
         n_gcn_dropout: float,
@@ -247,7 +259,9 @@ class GATModel(torch.nn.Module):
         if n_gcn_outputs == 0 and n_mlp_outputs == 0:
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
-        self.gcn = GAT(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout) if n_gcn_outputs > 0 else None
+        # edge_dim must be given to the underlying GATConv layers, otherwise edge_attr is silently discarded.
+        self.gcn = GAT(n_gcn_inputs, n_gcn_hiddens, n_gcn_layers, n_gcn_outputs, n_gcn_dropout,
+                       edge_dim=_edge_dim_or_none(edge_dim)) if n_gcn_outputs > 0 else None
         self.n_gcn_outputs = n_gcn_outputs
 
         self.mlp = ModuleList([
@@ -784,8 +798,8 @@ class ChebConvModel(torch.nn.Module):
             raise ValueError("The total output size of GCN and MLP modules cannot be 0!")
 
         self.gcn = ModuleList([
-            ChebConv(n_gcn_inputs, n_gcn_hiddens),
-            *[ChebConv(n_gcn_hiddens, n_gcn_hiddens) for _ in range(1, n_gcn_layers)],
+            ChebConv(n_gcn_inputs, n_gcn_hiddens, CHEB_CONV_K),
+            *[ChebConv(n_gcn_hiddens, n_gcn_hiddens, CHEB_CONV_K) for _ in range(1, n_gcn_layers)],
             Linear(n_gcn_hiddens, n_gcn_outputs)
         ]) if n_gcn_outputs > 0 else None
 
@@ -1340,13 +1354,10 @@ class PDNConvModel(torch.nn.Module):
         if n_gcn_outputs > 0:
             self.gcn = ModuleList()
             self.gcn.append(PDNConv(n_gcn_inputs, n_gcn_hiddens, edge_dim, edge_n_hiddens))
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
+            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs))
             for i in range(1, n_gcn_layers):
                 self.gcn.append(PDNConv(n_gcn_hiddens, n_gcn_hiddens, edge_dim, edge_n_hiddens))
-                if i != n_gcn_layers - 1:
-                    self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
-                else:
-                    self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+                self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs))
         else:
             self.gcn = None
 
@@ -1416,14 +1427,11 @@ class GENConvModel(torch.nn.Module):
 
         if n_gcn_outputs > 0:
             self.gcn = ModuleList()
-            self.gcn.append(GENConv(n_gcn_inputs, n_gcn_hiddens, edge_dim=edge_dim))
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
+            self.gcn.append(GENConv(n_gcn_inputs, n_gcn_hiddens, edge_dim=_edge_dim_or_none(edge_dim)))
+            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs))
             for i in range(1, n_gcn_layers):
-                self.gcn.append(GENConv(n_gcn_hiddens, n_gcn_hiddens, edge_dim=edge_dim))
-                if i != n_gcn_layers - 1:
-                    self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
-                else:
-                    self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+                self.gcn.append(GENConv(n_gcn_hiddens, n_gcn_hiddens, edge_dim=_edge_dim_or_none(edge_dim)))
+                self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs))
         else:
             self.gcn = None
 
@@ -1493,14 +1501,11 @@ class ResGatedGraphConvModel(torch.nn.Module):
 
         if n_gcn_outputs > 0:
             self.gcn = ModuleList()
-            self.gcn.append(ResGatedGraphConv(n_gcn_inputs, n_gcn_hiddens, edge_dim=edge_dim))
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
+            self.gcn.append(ResGatedGraphConv(n_gcn_inputs, n_gcn_hiddens, edge_dim=_edge_dim_or_none(edge_dim)))
+            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs))
             for i in range(1, n_gcn_layers):
-                self.gcn.append(ResGatedGraphConv(n_gcn_hiddens, n_gcn_hiddens, edge_dim=edge_dim))
-                if i != n_gcn_layers - 1:
-                    self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
-                else:
-                    self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+                self.gcn.append(ResGatedGraphConv(n_gcn_hiddens, n_gcn_hiddens, edge_dim=_edge_dim_or_none(edge_dim)))
+                self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs))
         else:
             self.gcn = None
 
@@ -1555,6 +1560,7 @@ class GATConvModel(torch.nn.Module):
         n_gcn_layers: int,
         n_gcn_heads: int,
         n_gcn_outputs: int,
+        edge_dim: int,
         n_mlp_inputs: int,
         n_mlp_hiddens: int,
         n_mlp_layers: int,
@@ -1570,14 +1576,11 @@ class GATConvModel(torch.nn.Module):
 
         if n_gcn_outputs > 0:
             self.gcn = ModuleList()
-            self.gcn.append(GATConv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads))
-            self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
+            self.gcn.append(GATConv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads, edge_dim=_edge_dim_or_none(edge_dim)))
+            self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs))
             for i in range(1, n_gcn_layers):
-                self.gcn.append(GATConv(n_gcn_hiddens, n_gcn_hiddens, n_gcn_heads))
-                if i != n_gcn_layers - 1:
-                    self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
-                else:
-                    self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_outputs))
+                self.gcn.append(GATConv(n_gcn_hiddens, n_gcn_hiddens, n_gcn_heads, edge_dim=_edge_dim_or_none(edge_dim)))
+                self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs))
         else:
             self.gcn = None
 
@@ -1648,14 +1651,11 @@ class GATv2ConvModel(torch.nn.Module):
 
         if n_gcn_outputs > 0:
             self.gcn = ModuleList()
-            self.gcn.append(GATv2Conv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads, edge_dim=edge_dim))
-            self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
+            self.gcn.append(GATv2Conv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads, edge_dim=_edge_dim_or_none(edge_dim)))
+            self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs))
             for i in range(1, n_gcn_layers):
-                self.gcn.append(GATv2Conv(n_gcn_hiddens, n_gcn_hiddens, n_gcn_heads, edge_dim=edge_dim))
-                if i != n_gcn_layers - 1:
-                    self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
-                else:
-                    self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_outputs))
+                self.gcn.append(GATv2Conv(n_gcn_hiddens, n_gcn_hiddens, n_gcn_heads, edge_dim=_edge_dim_or_none(edge_dim)))
+                self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs))
         else:
             self.gcn = None
 
@@ -1726,13 +1726,10 @@ class SuperGATConvModel(torch.nn.Module):
         if n_gcn_outputs > 0:
             self.gcn = ModuleList()
             self.gcn.append(SuperGATConv(n_gcn_inputs, n_gcn_hiddens, heads=n_gcn_heads, is_undirected=True))
-            self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
+            self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs))
             for i in range(1, n_gcn_layers):
                 self.gcn.append(SuperGATConv(n_gcn_hiddens, n_gcn_hiddens, heads=n_gcn_heads, is_undirected=True))
-                if i != n_gcn_layers - 1:
-                    self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
-                else:
-                    self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_outputs))
+                self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs))
         else:
             self.gcn = None
 
@@ -1803,17 +1800,15 @@ class TransformerConvModel(torch.nn.Module):
 
         if n_gcn_outputs > 0:
             self.gcn = ModuleList()
-            self.gcn.append(TransformerConv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads, edge_dim=edge_dim))
-            self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
-            self.gcn.append(BatchNorm1d(n_gcn_hiddens))
+            first_out = n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs
+            self.gcn.append(TransformerConv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads, edge_dim=_edge_dim_or_none(edge_dim)))
+            self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, first_out))
+            self.gcn.append(BatchNorm1d(first_out))
             for i in range(1, n_gcn_layers):
-                self.gcn.append(TransformerConv(n_gcn_hiddens, n_gcn_hiddens, n_gcn_heads, edge_dim=edge_dim))
-                if i != n_gcn_layers - 1:
-                    self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_hiddens))
-                    self.gcn.append(BatchNorm1d(n_gcn_hiddens))
-                else:
-                    self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, n_gcn_outputs))
-                    self.gcn.append(BatchNorm1d(n_gcn_outputs))
+                layer_out = n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs
+                self.gcn.append(TransformerConv(n_gcn_hiddens, n_gcn_hiddens, n_gcn_heads, edge_dim=_edge_dim_or_none(edge_dim)))
+                self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, layer_out))
+                self.gcn.append(BatchNorm1d(layer_out))
         else:
             self.gcn = None
 
@@ -1886,14 +1881,11 @@ class GeneralConvModel(torch.nn.Module):
 
         if n_gcn_outputs > 0:
             self.gcn = ModuleList()
-            self.gcn.append(GeneralConv(n_gcn_inputs, n_gcn_hiddens, in_edge_channels=edge_dim, attention=True, heads=n_gcn_heads))
-            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
+            self.gcn.append(GeneralConv(n_gcn_inputs, n_gcn_hiddens, in_edge_channels=_edge_dim_or_none(edge_dim), attention=True, heads=n_gcn_heads))
+            self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs))
             for i in range(1, n_gcn_layers):
-                self.gcn.append(GeneralConv(n_gcn_hiddens, n_gcn_hiddens, in_edge_channels=edge_dim, attention=True, heads=n_gcn_heads))
-                if i != n_gcn_layers - 1:
-                    self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens))
-                else:
-                    self.gcn.append(Linear(n_gcn_hiddens, n_gcn_outputs))
+                self.gcn.append(GeneralConv(n_gcn_hiddens, n_gcn_hiddens, in_edge_channels=_edge_dim_or_none(edge_dim), attention=True, heads=n_gcn_heads))
+                self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs))
         else:
             self.gcn = None
 

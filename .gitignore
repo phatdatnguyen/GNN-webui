@@ -1,4 +1,5 @@
 __pycache__/
+.pytest_cache/
 gnn-env/
 .vs/
 .ipynb_checkpoints/
@@ -7,3 +8,6 @@ Data/
 .vs/
 
 CLAUDE.md
+*.txt
+!requirements.txt
+!requirements-dev.txt

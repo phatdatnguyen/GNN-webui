@@ -1,8 +1,11 @@
-rdkit
-deepchem
-torch_geometric
-gradio
-nglview==4.0
-matplotlib
-plotly
-tabulate
+# Install PyTorch separately first (see README) - it must match your CUDA version.
+rdkit>=2024.3
+deepchem>=2.8.0
+torch_geometric>=2.6
+gradio>=5.0
+fastapi>=0.115
+uvicorn>=0.30
+numpy>=1.26
+pandas>=2.2
+scikit-learn>=1.4
+matplotlib>=3.8

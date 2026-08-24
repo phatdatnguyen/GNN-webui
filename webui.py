@@ -1,5 +1,3 @@
-import os
-import glob
 import gradio as gr
 from binary_classification import binary_classification_tab_content
 from binary_classification_3d import binary_classification_3d_tab_content
@@ -7,40 +5,29 @@ from regression import regression_tab_content
 from regression_3d import regression_3d_tab_content
 from pathlib import Path
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from utils import BASE_DIR, DATA_DIR
 import uvicorn
 import socket
-
-# remove all html files in the static directory
-for filepath in glob.iglob('./Static/*.html'):
-    os.remove(filepath)
-
-# create a static directory to store the static files
-static_dir = Path('./Static')
-static_dir.mkdir(parents=True, exist_ok=True)
+import os
 
 # create a data directory to store the user data files
-data_dir = Path('./Data')
-data_dir.mkdir(parents=True, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # create a FastAPI app
 app = FastAPI()
 
-# mount FastAPI StaticFiles server
-app.mount("/Static", StaticFiles(directory=static_dir), name="Static")
-
-# function to find an available port
-def find_available_port(start_port=7860):
-    port = start_port
-    while True:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(('localhost', port))
-                return port  # Available port found
-            except OSError:
-                port += 1  # Try next port
-
-available_port = find_available_port()
+# function to reserve an available port
+def reserve_available_port(start_port=7860, max_attempts=100):
+    """Bind and return a listening socket, so nothing else can take the port before uvicorn starts."""
+    for port in range(start_port, start_port + max_attempts):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(('127.0.0.1', port))
+            sock.listen(128)
+            return sock, port
+        except OSError:
+            sock.close()
+    raise RuntimeError(f"No free port found in range {start_port}-{start_port + max_attempts - 1}.")
 
 with gr.Blocks() as blocks:
     with gr.Tabs() as tabs:
@@ -50,8 +37,13 @@ with gr.Blocks() as blocks:
         regression_3d_tab_content()
 
 # mount Gradio app to FastAPI app
-app = gr.mount_gradio_app(app, blocks, css_paths=Path('./styles.css'), path="/", allowed_paths=["./", "./Static"])
+app = gr.mount_gradio_app(app, blocks, css_paths=Path(BASE_DIR) / 'styles.css', path="/")
 
 # serve the app
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=available_port, access_log=False)
+    server_socket, available_port = reserve_available_port()
+    # flush: stdout is block-buffered when redirected to a file, which would otherwise hide
+    # this line until the process exits.
+    print(f"Starting GNN web UI on http://127.0.0.1:{available_port}", flush=True)
+    config = uvicorn.Config(app, access_log=False)
+    uvicorn.Server(config).run(sockets=[server_socket])

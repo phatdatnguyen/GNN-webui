@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import numpy as np
 import pandas as pd
@@ -9,8 +10,48 @@ import deepchem as dc
 import torch
 from torch_geometric.data import Data
 
+# Anchor all user data to the repo directory so the app behaves the same regardless of the CWD.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "Data")
+
+def sanitize_path_component(name, label="name"):
+    """Validate that a user-supplied string is a single safe path component.
+
+    The working directory, dataset, checkpoint and export names all come straight from
+    free-text boxes, so without this a value like '../..' or '/etc' would escape Data/.
+    This rejects rather than rewrites: silently turning '/etc' into 'etc' would put the
+    user's data somewhere they did not ask for.
+    """
+    if name is None:
+        raise ValueError(f"Please specify a {label}.")
+    component = str(name).strip()
+    if component == "":
+        raise ValueError(f"Please specify a {label}.")
+    if component in (".", ".."):
+        raise ValueError(f"Invalid {label}: {name!r}.")
+    if not re.fullmatch(r"[A-Za-z0-9._ -]+", component):
+        raise ValueError(f"Invalid {label}: {name!r}. Use only letters, digits, spaces, "
+                         "'.', '_' or '-' - path separators are not allowed.")
+    return component
+
+def list_graph_files(graph_directory_path):
+    """Return the graph shards written by extract_graphs, ordered by their numeric index.
+
+    Only files named '<int>.pt' count - anything else a user drops in the directory must not
+    change the dataset length.
+    """
+    if not os.path.isdir(graph_directory_path):
+        return []
+    indices = sorted(
+        int(f[:-3]) for f in os.listdir(graph_directory_path)
+        if f.endswith(".pt") and f[:-3].isdigit()
+    )
+    return indices
+
 def process_dataset_file(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_column_names, is_3d_dataset=False):
     try:
+        dataset_name = sanitize_path_component(dataset_name, "dataset name")
+
         # Load the dataset and validate columns
         df = pd.read_csv(dataset_file_path)
         if smiles_column not in df.columns:
@@ -57,6 +98,8 @@ def process_dataset_file(dataset_file_path, working_directory_path, dataset_name
 
 def extract_graphs(working_directory_path, dataset_file_name, graph_directory, graph_featurizer_name, datatype, progress):
     try:
+        # This path is passed to shutil.rmtree below, so it must be a single safe component.
+        graph_directory = sanitize_path_component(graph_directory, "graph directory")
         dataset_file_path = os.path.join(working_directory_path, dataset_file_name)
         df = pd.read_csv(dataset_file_path)
         smiles_list = df['SMILES'].tolist()
@@ -84,7 +127,9 @@ def extract_graphs(working_directory_path, dataset_file_name, graph_directory, g
                 mol_obj = Chem.AddHs(mol_obj)
                 graph = graph_featurizer.featurize(mol_obj)
                 node_feats = torch.tensor(np.array(graph[0].node_features), dtype=datatype)
-                edge_index = torch.tensor(np.array(graph[0].edge_index), dtype=datatype)
+                # edge_index holds node indices, not features: it must stay integral. Storing it as
+                # a low-precision float silently corrupts indices above 2048 once batches are collated.
+                edge_index = torch.tensor(np.array(graph[0].edge_index), dtype=torch.long)
                 edge_attr = torch.tensor(np.array(graph[0].edge_features), dtype=datatype)
 
                 data = Data(x=node_feats, edge_index=edge_index, edge_attr=edge_attr, smiles=df['SMILES'].iloc[i])
@@ -110,6 +155,8 @@ def extract_graphs(working_directory_path, dataset_file_name, graph_directory, g
     
 def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory, num_conformers, force_field, datatype, progress):
     try:
+        # This path is passed to shutil.rmtree below, so it must be a single safe component.
+        graph_directory = sanitize_path_component(graph_directory, "graph directory")
         dataset_file_path = os.path.join(working_directory_path, dataset_file_name)
         df = pd.read_csv(dataset_file_path)
         smiles_list = df['SMILES'].tolist()
@@ -160,7 +207,8 @@ def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory
                     ]
                     for i in range(mol_obj.GetNumAtoms())
                 ])
-                z = torch.tensor(z, dtype=datatype)
+                # Atomic numbers index an embedding table, so they must stay integral.
+                z = torch.tensor(z, dtype=torch.long)
                 pos = torch.tensor(pos, dtype=datatype)
 
                 data = Data(z=z, pos=pos, smiles=df['SMILES'].iloc[i])
@@ -186,6 +234,8 @@ def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory
     
 def extract_molecule_fingerprints(working_directory_path, dataset_file_name, molecular_fingerprint_directory, molecular_fingerprint_name, radius, number_of_bits, progress):
     try:
+        # This path is passed to shutil.rmtree below, so it must be a single safe component.
+        molecular_fingerprint_directory = sanitize_path_component(molecular_fingerprint_directory, "molecular fingerprint directory")
         dataset_file_path = os.path.join(working_directory_path, dataset_file_name)
         df = pd.read_csv(dataset_file_path)
         smiles_list = df['SMILES'].tolist()

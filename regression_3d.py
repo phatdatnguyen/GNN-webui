@@ -17,19 +17,21 @@ from models import *
 from utils import *
 
 def get_working_directories():
-    base_path = "./Data/"
-    return [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
+    os.makedirs(DATA_DIR, exist_ok=True)
+    return sorted(d for d in os.listdir(DATA_DIR) if os.path.isdir(os.path.join(DATA_DIR, d)))
 
 def get_working_directory_contents(working_directory_path):
     contents = [f for f in os.listdir(working_directory_path)]
     return contents
 
 def on_open_working_directory(working_directory_name):
-    if working_directory_name is None or working_directory_name.strip() == "":
-        gr.Warning("Please specify a working directory.")
+    try:
+        working_directory_name = sanitize_path_component(working_directory_name, "working directory name")
+    except ValueError as exc:
+        gr.Warning(str(exc))
         return None, gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), None, None
-    
-    working_directory_path = os.path.join("./Data/", working_directory_name)
+
+    working_directory_path = os.path.join(DATA_DIR, working_directory_name)
     os.makedirs(working_directory_path, exist_ok=True)
     files = get_working_directory_contents(working_directory_path)
     
@@ -49,10 +51,11 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
             file_type = "Data file"
         else:
             file_type = "Other file"
-        modified_time = time.ctime(os.path.getmtime(content_path))
-        contents_info.append([content, file_type, modified_time])
-        contents_info.sort(key=lambda x: x[2].lower(), reverse=True) # Sort by modified time descending
-    contents_df = pd.DataFrame(contents_info, columns=["File", "Type", "Modified"])
+        modified_timestamp = os.path.getmtime(content_path)
+        contents_info.append([content, file_type, time.ctime(modified_timestamp), modified_timestamp])
+    # Sort on the numeric timestamp: the ctime string sorts by weekday name, not by date.
+    contents_info.sort(key=lambda x: x[3], reverse=True)
+    contents_df = pd.DataFrame([row[:3] for row in contents_info], columns=["File", "Type", "Modified"])
 
     # Filter files
     data_files = [f for f in contents if f.endswith('.csv')]
@@ -165,7 +168,7 @@ def on_process_data(working_directory_path, dataset_file_name, graph_directory, 
         return f"<span style='color: green;'>{status}</span>", gr.update(interactive=True), dataset, train_dataloader, val_dataloader, test_dataloader, output_scaler
     except Exception as exc:
         status = f"Error processing data: {exc}"
-        return f"<span style='color: red;'>{status}</span>", None, None, None, None, None, None
+        return f"<span style='color: red;'>{status}</span>", gr.update(interactive=False), None, None, None, None, None
 
 def on_gnn_model_tab_selected(evt: gr.SelectData):
     return evt.value
@@ -225,7 +228,9 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed,
                 max_num_neighbors=visnet_max_num_neighbors,
                 vertex=visnet_vertex
             ).to(device=device, dtype=datatype)
-        
+        else:
+            raise ValueError(f"Unknown 3D GNN model '{gnn_model_tab}'.")
+
         # Reset training state
         train_losses = []
         val_losses = []
@@ -241,11 +246,18 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed,
             gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), \
             model, train_losses, val_losses, trained_epochs
 
-def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_epochs):
+def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_epochs, output_scaler):
     try:
+        if model is None:
+            raise ValueError("Please create a model first.")
+        checkpoint_name = sanitize_path_component(checkpoint_name, "checkpoint name")
+        # The output scaler denormalises every prediction, so a checkpoint reloaded without it
+        # silently returns predictions on the wrong scale.
         checkpoint = {
+            'model_class': type(model).__name__,
             'state_dict': model.state_dict(),
-            'trained_epochs': trained_epochs
+            'trained_epochs': trained_epochs,
+            'output_scaler': output_scaler
         }
         checkpoint_path = os.path.join(working_directory_path, f"{checkpoint_name}_{trained_epochs}.ckpt")
         torch.save(checkpoint, checkpoint_path)
@@ -255,20 +267,25 @@ def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_e
         status = f"Error saving checkpoint: {exc}"
         return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
-def on_load_checkpoint(working_directory_path, checkpoint_file_name, model):
+def on_load_checkpoint(working_directory_path, checkpoint_file_name, model, train_losses, val_losses, trained_epochs, output_scaler):
     try:
+        if model is None:
+            raise ValueError("Please create a model first, so the checkpoint has an architecture to load into.")
         checkpoint_file_path = os.path.join(working_directory_path, checkpoint_file_name)
         checkpoint = torch.load(checkpoint_file_path, weights_only=False)
+        saved_class = checkpoint.get('model_class')
+        if saved_class is not None and saved_class != type(model).__name__:
+            raise ValueError(f"This checkpoint was saved from a {saved_class} but the current model is a "
+                             f"{type(model).__name__}. Re-create the model with the original architecture first.")
         model.load_state_dict(checkpoint['state_dict'])
-        trained_epochs = checkpoint.get('trained_epochs', 0)
-        train_losses = []
-        val_losses = []
 
         status = f"Checkpoint loaded: {checkpoint_file_name}."
-        return f"<span style='color: green;'>{status}</span>", model, train_losses, val_losses, trained_epochs
+        return f"<span style='color: green;'>{status}</span>", model, [], [], checkpoint.get('trained_epochs', 0), \
+            checkpoint.get('output_scaler', output_scaler)
     except Exception as exc:
         status = f"Error loading checkpoint: {exc}"
-        return f"<span style='color: red;'>{status}</span>", model, None, None, None
+        # Leave the existing training state untouched - returning None here breaks the next Train click.
+        return f"<span style='color: red;'>{status}</span>", model, train_losses, val_losses, trained_epochs, output_scaler
 
 loss_fn = torch.nn.MSELoss()
 def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider):
@@ -289,8 +306,8 @@ def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learnin
 def train(model, dataloader, device, datatype, output_scaler, optimizer):
     model.train()
     total_loss = 0.0
-    num_batches = 0
-        
+    num_samples = 0
+
     for batch in dataloader:
         # Get input data
         z = batch.z.to(device=device, dtype=torch.int32)
@@ -310,18 +327,20 @@ def train(model, dataloader, device, datatype, output_scaler, optimizer):
         loss = loss_fn(output, y_scaled)
         loss.backward()
         optimizer.step()
-        total_loss += torch.sqrt(loss).item()
-        num_batches += 1
+        # Accumulate squared error and take the root once, so this is the true RMSE over the
+        # epoch rather than a mean of per-batch RMSEs (which depends on the batch size).
+        total_loss += loss.item() * y_scaled.shape[0]
+        num_samples += y_scaled.shape[0]
 
-    return total_loss / num_batches if num_batches > 0 else 0.0
+    return math.sqrt(total_loss / num_samples) if num_samples > 0 else 0.0
 
 # Define the validation function
 @torch.no_grad()
 def validation(model, dataloader, device, datatype, output_scaler):
     model.eval()
     total_loss = 0.0
-    num_batches = 0
-    
+    num_samples = 0
+
     for batch in dataloader:
         # Get input data
         z = batch.z.to(device=device, dtype=torch.int32)
@@ -339,10 +358,10 @@ def validation(model, dataloader, device, datatype, output_scaler):
 
             # Compute loss
             loss = loss_fn(output, y_scaled)
-            total_loss += torch.sqrt(loss).item()
-        num_batches += 1
+            total_loss += loss.item() * y_scaled.shape[0]
+        num_samples += y_scaled.shape[0]
 
-    return total_loss / num_batches if num_batches > 0 else 0.0
+    return math.sqrt(total_loss / num_samples) if num_samples > 0 else 0.0
 
 def on_train(model, train_dataloader, val_dataloader, device, datatype, output_scaler, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, progress=gr.Progress()):
     # Training loop
@@ -361,7 +380,7 @@ def on_train(model, train_dataloader, val_dataloader, device, datatype, output_s
     plt.plot(train_losses, label='Train loss')
     plt.plot(val_losses, label='Validation loss')
     plt.xlabel('Epoch')
-    plt.ylabel('RMSE loss')
+    plt.ylabel('RMSE loss (scaled targets)')
     plt.legend()
     plt.grid(True)
     plt.close()
@@ -371,13 +390,20 @@ def on_train(model, train_dataloader, val_dataloader, device, datatype, output_s
     return f"<span style='color: green;'>{status}</span>", figure, export_losses_button, trained_epochs, train_losses, val_losses
 
 def on_export_losses(working_directory_path, file_name, train_losses, val_losses):
-    df = pd.DataFrame()
-    df['train_losses'] = train_losses
-    df['val_losses'] = val_losses
-    file_path = os.path.join(working_directory_path, f"{file_name}.csv")
-    df.to_csv(file_path)
-    status = f"Losses exported to {file_name}.csv."
-    return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    try:
+        if not train_losses:
+            raise ValueError("Please train the model first.")
+        file_name = sanitize_path_component(file_name, "file name")
+        df = pd.DataFrame()
+        df['train_losses'] = train_losses
+        df['val_losses'] = val_losses
+        file_path = os.path.join(working_directory_path, f"{file_name}.csv")
+        df.to_csv(file_path, index_label='epoch')
+        status = f"Losses exported to {file_name}.csv."
+        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    except Exception as exc:
+        status = f"Error exporting losses: {exc}"
+        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
 # Define the test function
 @torch.no_grad()
@@ -413,46 +439,65 @@ def test(model, dataloader, device, datatype, output_scaler):
     return y_test, y_pred, smiles_arr
 
 def on_evaluate(model, dataset, test_dataloader, device, datatype, output_scaler):
-    # Get test predictions
-    y_test, y_pred, test_smiles_arr = test(model, test_dataloader, device, datatype, output_scaler)
-    y_test_np = y_test.detach().numpy().ravel()
-    y_pred_np = y_pred.ravel()
+    try:
+        if model is None or test_dataloader is None:
+            raise ValueError("Please process the data and create a model first.")
+        if output_scaler is None:
+            raise ValueError("No output scaler is available. Please process the data, or load a checkpoint that stores one.")
+        # Get test predictions
+        y_test, y_pred, test_smiles_arr = test(model, test_dataloader, device, datatype, output_scaler)
+        if len(test_smiles_arr) == 0:
+            raise ValueError("The test split is empty. Please lower the validation size or raise the test size.")
+        y_test_np = y_test.detach().numpy().ravel()
+        y_pred_np = y_pred.ravel()
 
-    eval_df = pd.DataFrame()
-    eval_df['SMILES'] = test_smiles_arr
-    target_column = dataset.target_column_name
-    eval_df[target_column] = y_test_np.tolist()
-    eval_df[f"{target_column} (Prediction)"] = y_pred_np.tolist()
+        eval_df = pd.DataFrame()
+        eval_df['SMILES'] = test_smiles_arr
+        target_column = dataset.target_column_name
+        eval_df[target_column] = y_test_np.tolist()
+        eval_df[f"{target_column} (Prediction)"] = y_pred_np.tolist()
 
-    # Evaluate the model using different metrics
-    mae = round(mean_absolute_error(y_test_np, y_pred_np), 4)
-    mse = round(mean_squared_error(y_test_np, y_pred_np), 4)
-    rmse = round(math.sqrt(mse), 4)
-    r2 = round(r2_score(y_test_np, y_pred_np), 4)
+        # Evaluate the model using different metrics
+        mae = round(mean_absolute_error(y_test_np, y_pred_np), 4)
+        mse = mean_squared_error(y_test_np, y_pred_np)
+        rmse = round(math.sqrt(mse), 4)
+        # R² is undefined when every actual value is identical.
+        r2 = round(r2_score(y_test_np, y_pred_np), 4) if len(y_test_np) > 1 and y_test_np.std() > 0 else float('nan')
 
-    metrics_df = pd.DataFrame({
-        'Metric': ['MAE', 'MSE', 'RMSE', 'R²'],
-        'Value': [mae, mse, rmse, r2]
-    })
+        metrics_df = pd.DataFrame({
+            'Metric': ['MAE', 'MSE', 'RMSE', 'R²'],
+            'Value': [mae, round(mse, 4), rmse, r2]
+        })
 
-    # Visualization
-    scatter_plot = plt.figure(figsize=(8, 8))
-    plt.scatter(y_test_np, y_pred_np)
-    plt.xlabel('actual value')
-    plt.ylabel('predicted value')
-    plt.grid(True)
-    plt.close()
+        # Visualization
+        scatter_plot = plt.figure(figsize=(8, 8))
+        plt.scatter(y_test_np, y_pred_np)
+        limits = [min(y_test_np.min(), y_pred_np.min()), max(y_test_np.max(), y_pred_np.max())]
+        plt.plot(limits, limits, color='navy', lw=1, linestyle='--')
+        plt.xlabel('actual value')
+        plt.ylabel('predicted value')
+        plt.grid(True)
+        plt.close(scatter_plot)
 
-    status = f"Evaluation completed."
+        status = f"Evaluation completed."
 
-    return f"<span style='color: green;'>{status}</span>", eval_df, metrics_df, scatter_plot, gr.update(interactive=True)
+        return f"<span style='color: green;'>{status}</span>", eval_df, metrics_df, scatter_plot, gr.update(interactive=True)
+    except Exception as exc:
+        status = f"Error evaluating model: {exc}"
+        return f"<span style='color: red;'>{status}</span>", None, None, None, gr.update(interactive=False)
 
 def on_export_evaluation(working_directory_path, file_name, eval_df):
-    file_path = os.path.join(working_directory_path, f"{file_name}.csv")
-    eval_df.to_csv(file_path)
-    status = f"Evaluation exported: {file_name}.csv"
-
-    return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    try:
+        if eval_df is None:
+            raise ValueError("Please run an evaluation first.")
+        file_name = sanitize_path_component(file_name, "file name")
+        file_path = os.path.join(working_directory_path, f"{file_name}.csv")
+        eval_df.to_csv(file_path, index=False)
+        status = f"Evaluation exported: {file_name}.csv"
+        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    except Exception as exc:
+        status = f"Error exporting evaluation: {exc}"
+        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
 def on_process_prediction_data(working_directory_path, prediction_dataset_file, prediction_graph_directory, datatype, batch_size):
     try:
@@ -495,24 +540,41 @@ def predict(model, dataloader, device, datatype, output_scaler):
     return smiles_list, y_pred
 
 def on_predict(model, dataset, predict_dataloader, device, datatype, output_scaler):
-    # Get predictions
-    smiles_list, y_pred = predict(model, predict_dataloader, device, datatype, output_scaler)
-    y_pred_np = y_pred.ravel()
+    try:
+        if model is None or predict_dataloader is None:
+            raise ValueError("Please process the prediction data first.")
+        if output_scaler is None:
+            raise ValueError("No output scaler is available. Please process the data, or load a checkpoint that stores one.")
+        # Get predictions
+        smiles_list, y_pred = predict(model, predict_dataloader, device, datatype, output_scaler)
+        if len(smiles_list) == 0:
+            raise ValueError("The prediction dataset is empty.")
+        y_pred_np = y_pred.ravel()
 
-    prediction_df = pd.DataFrame()
-    prediction_df['SMILES'] = smiles_list
-    target_column = dataset.target_column_name
-    prediction_df[f"{target_column} (Prediction)"] = y_pred_np.tolist()
+        prediction_df = pd.DataFrame()
+        prediction_df['SMILES'] = smiles_list
+        target_column = dataset.target_column_name if dataset is not None and dataset.target_column_name else 'target'
+        prediction_df[f"{target_column} (Prediction)"] = y_pred_np.tolist()
 
-    status = f"Prediction completed."
+        status = f"Prediction completed."
 
-    return f"<span style='color: green;'>{status}</span>", prediction_df, gr.update(interactive=True)
+        return f"<span style='color: green;'>{status}</span>", prediction_df, gr.update(interactive=True)
+    except Exception as exc:
+        status = f"Error making prediction: {exc}"
+        return f"<span style='color: red;'>{status}</span>", None, gr.update(interactive=False)
 
 def on_export_prediction(working_directory_path, prediction_file_name, prediction_df):
-    prediction_file_path = os.path.join(working_directory_path, f"{prediction_file_name}.csv")
-    prediction_df.to_csv(prediction_file_path)
-    status = f"Predictions exported: {prediction_file_name}.csv"
-    return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    try:
+        if prediction_df is None:
+            raise ValueError("Please make a prediction first.")
+        prediction_file_name = sanitize_path_component(prediction_file_name, "file name")
+        prediction_file_path = os.path.join(working_directory_path, f"{prediction_file_name}.csv")
+        prediction_df.to_csv(prediction_file_path, index=False)
+        status = f"Predictions exported: {prediction_file_name}.csv"
+        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+    except Exception as exc:
+        status = f"Error exporting predictions: {exc}"
+        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
 def regression_3d_tab_content():
     with gr.Tab("Regression 3D") as regression_3d_tab:
@@ -699,8 +761,9 @@ def regression_3d_tab_content():
                                                 dimenetplusplus_n_hiddens, dimenetplusplus_n_blocks, dimenetplusplus_int_emb_size, dimenetplusplus_basis_emb_size, dimenetplusplus_out_emb_channels, dimenetplusplus_n_spherical, dimenetplusplus_n_radial, dimenetplusplus_cutoff, dimenetplusplus_max_num_neighbors, dimenetplusplus_envelope_exponent, dimenetplusplus_n_output_layers,
                                                 visnet_n_hiddens, visnet_n_heads, visnet_n_layers, visnet_num_rbf, visnet_trainable_rbf, visnet_max_z, visnet_cutoff, visnet_max_num_neighbors, visnet_vertex],
                                                 [status_html, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, model_state, train_losses_state, val_losses_state, trained_epochs_state])
-    save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state], [status_html, working_directory_content_list_state])
-    load_checkpoint_button.click(on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state], [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state])
+    save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, output_scaler_state], [status_html, working_directory_content_list_state])
+    load_checkpoint_button.click(on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, output_scaler_state],
+                                 [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, output_scaler_state])
     
     # Train model interactions
     create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [status_html, optimizer_state, schedular_state, train_button])
