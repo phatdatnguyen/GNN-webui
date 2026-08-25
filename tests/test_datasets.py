@@ -173,6 +173,38 @@ def test_rejects_graphs_shifted_against_the_dataset(classification_workdir):
         make_dataset(classification_workdir, "Graphs")
 
 
+def test_manifest_catches_a_shift_confined_to_the_middle(classification_workdir):
+    """The old spot check only sampled the first, middle and last graph. The manifest lets
+    the whole ordering be verified for the cost of one small file read."""
+    path = os.path.join(classification_workdir, "dataset.csv")
+    df = pd.read_csv(path)
+    swapped = df.copy()
+    swapped.iloc[3], swapped.iloc[4] = df.iloc[4].copy(), df.iloc[3].copy()
+    swapped.to_csv(path, index=False)
+
+    with pytest.raises(ValueError, match="out of sync"):
+        make_dataset(classification_workdir, "Graphs")
+
+
+def test_extraction_writes_a_manifest(classification_workdir):
+    import utils
+    manifest = utils.read_graph_manifest(os.path.join(classification_workdir, "graphs"))
+    assert manifest == SMILES
+
+
+def test_alignment_check_falls_back_when_there_is_no_manifest(classification_workdir):
+    """Graph directories written before the manifest existed must still load."""
+    import utils
+    os.remove(os.path.join(classification_workdir, "graphs", utils.GRAPH_MANIFEST))
+    assert len(make_dataset(classification_workdir, "Graphs")) == len(SMILES)
+
+    path = os.path.join(classification_workdir, "dataset.csv")
+    df = pd.read_csv(path)
+    pd.concat([df.iloc[5:], df.iloc[:5]]).reset_index(drop=True).to_csv(path, index=False)
+    with pytest.raises(ValueError, match="out of sync"):
+        make_dataset(classification_workdir, "Graphs")
+
+
 def test_rejects_a_gap_in_the_graph_numbering(classification_workdir):
     os.remove(os.path.join(classification_workdir, "graphs", "4.pt"))
     with pytest.raises(ValueError):

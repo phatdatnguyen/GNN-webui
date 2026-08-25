@@ -16,17 +16,17 @@ from conftest import FakeProgress, SMILES, create_model_args, is_error, is_ok
 
 
 def process_classification(workdir, load_data="Both", dimensionality_reduction=False,
-                           test_ratio=0.25, val_ratio=0.25, batch_size=4):
+                           test_ratio=0.25, val_ratio=0.25, batch_size=4, shuffle=False, seed=0):
     return bc.on_process_data(
         workdir, "dataset.csv", load_data, "graphs", "fps", torch.float32,
-        dimensionality_reduction, 0.0, 4, test_ratio, val_ratio, batch_size, 0,
+        dimensionality_reduction, 0.0, 4, test_ratio, val_ratio, batch_size, shuffle, seed,
     )
 
 
-def process_regression(workdir, load_data="Both", dimensionality_reduction=False):
+def process_regression(workdir, load_data="Both", dimensionality_reduction=False, shuffle=False):
     return rg.on_process_data(
         workdir, "dataset.csv", load_data, "graphs", "fps", torch.float32,
-        dimensionality_reduction, 0.0, 4, 0.25, 0.25, 4, 0,
+        dimensionality_reduction, 0.0, 4, 0.25, 0.25, 4, shuffle, 0,
     )
 
 
@@ -147,6 +147,41 @@ def test_dimensionality_reduction_is_fitted_on_the_training_split_only(classific
     assert pca.n_samples_ == len(train_dl.dataset)
 
 
+def test_training_data_is_reshuffled_between_epochs_when_enabled(classification_workdir):
+    """Regression: the training loader never shuffled, so every epoch saw the same batches
+    in the same order."""
+    train_dl = process_classification(classification_workdir, "Graphs", shuffle=True)[4]
+    first = [batch.smiles for batch in train_dl]
+    second = [batch.smiles for batch in train_dl]
+    assert first != second
+    assert sorted(sum(first, [])) == sorted(sum(second, []))     # same molecules, new order
+
+
+def test_shuffling_can_be_turned_off_for_a_fixed_batch_order(classification_workdir):
+    train_dl = process_classification(classification_workdir, "Graphs", shuffle=False)[4]
+    assert [b.smiles for b in train_dl] == [b.smiles for b in train_dl]
+
+
+def test_shuffled_runs_are_reproducible_for_a_fixed_seed(classification_workdir):
+    """Shuffling is seeded from the random seed, so it does not cost reproducibility."""
+    first = [b.smiles for b in process_classification(
+        classification_workdir, "Graphs", shuffle=True, seed=7)[4]]
+    second = [b.smiles for b in process_classification(
+        classification_workdir, "Graphs", shuffle=True, seed=7)[4]]
+    other = [b.smiles for b in process_classification(
+        classification_workdir, "Graphs", shuffle=True, seed=8)[4]]
+
+    assert first == second
+    assert first != other
+
+
+def test_validation_and_test_order_stay_deterministic(classification_workdir):
+    _, _, _, _, _, val_dl, test_dl, _, _ = process_classification(
+        classification_workdir, "Graphs", shuffle=True)
+    assert [b.smiles for b in val_dl] == [b.smiles for b in val_dl]
+    assert [b.smiles for b in test_dl] == [b.smiles for b in test_dl]
+
+
 # ------------------------------------------------------------------------ model creation
 
 @pytest.mark.parametrize("tab", ["GCN", "GraphSAGE", "GIN", "GAT", "EdgeCNN", "AttentiveFP"])
@@ -166,6 +201,106 @@ def test_create_custom_model_at_every_layer_count(classification_workdir, layer,
         dataset, "Custom", customgcn_convolutional_layer_name=layer,
         customgcn_n_layers=n_layers))
     assert is_ok(result[0]), result[0]
+
+
+def test_creating_a_model_disables_training_until_an_optimizer_exists(classification_workdir):
+    """Regression: Train stayed enabled after creating a new model, so it could run with an
+    optimizer bound to the previous model - which updates nothing and reports success."""
+    dataset = process_classification(classification_workdir)[3]
+    result = bc.on_create_model(*create_model_args(dataset, "GCN"))
+    train_button_update = result[7]
+    assert train_button_update.get("interactive") is False
+
+    model = result[-4]
+    _, optimizer, scheduler, train_button = bc.on_create_optimizer(model, "Adam", 0.01, 0.99)
+    assert train_button.get("interactive") is True
+
+
+def test_training_with_an_optimizer_from_another_model_is_refused(classification_workdir):
+    """The guard behind the UI change: if the states ever do get out of step, training must
+    report an error rather than silently doing nothing."""
+    _, _, _, dataset, train_dl, val_dl, _, vt, pca = process_classification(classification_workdir)
+    model_a = bc.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    _, optimizer, scheduler, _ = bc.on_create_optimizer(model_a, "Adam", 0.1, 0.99)
+    model_b = bc.on_create_model(*create_model_args(dataset, "GCN", gcn_num_layers=3))[-4]
+
+    before = [p.detach().clone() for p in model_b.parameters()]
+    status, _, _, trained_epochs, train_losses, _ = bc.on_train(
+        model_b, dataset, train_dl, val_dl, "cpu", torch.float32, optimizer, scheduler, 2,
+        0, [], [], "GCN", "GCNConv", vt, pca, FakeProgress())
+
+    assert is_error(status)
+    assert "Create optimizer" in status
+    assert trained_epochs == 0 and train_losses == []
+    assert all(torch.equal(p.detach(), q) for p, q in zip(model_b.parameters(), before))
+
+
+def test_training_actually_updates_the_model(classification_workdir):
+    """The positive counterpart: with a matching optimizer, parameters must move."""
+    _, _, _, dataset, train_dl, val_dl, _, vt, pca = process_classification(classification_workdir)
+    model = bc.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    _, optimizer, scheduler, _ = bc.on_create_optimizer(model, "Adam", 0.1, 0.99)
+
+    before = [p.detach().clone() for p in model.parameters()]
+    status, _, _, trained_epochs, train_losses, _ = bc.on_train(
+        model, dataset, train_dl, val_dl, "cpu", torch.float32, optimizer, scheduler, 2,
+        0, [], [], "GCN", "GCNConv", vt, pca, FakeProgress())
+
+    assert is_ok(status)
+    assert trained_epochs == 2
+    assert any(not torch.equal(p.detach(), q) for p, q in zip(model.parameters(), before))
+
+
+def test_training_reports_failures_instead_of_raising(classification_workdir):
+    """Regression: on_train had no try/except, so any failure produced a raw traceback and
+    left train_losses and trained_epochs disagreeing."""
+    _, _, _, dataset, train_dl, _, _, vt, pca = process_classification(classification_workdir)
+    model = bc.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    _, optimizer, scheduler, _ = bc.on_create_optimizer(model, "Adam", 0.01, 0.99)
+
+    losses = []
+    status, figure, _, trained_epochs, train_losses, val_losses = bc.on_train(
+        model, dataset, train_dl, None, "cpu", torch.float32, optimizer, scheduler, 2,
+        0, losses, [], "GCN", "GCNConv", vt, pca, FakeProgress())
+
+    assert is_error(status)
+    assert len(train_losses) == len(val_losses) == trained_epochs   # state stays consistent
+    assert figure is not None
+
+
+def test_training_keeps_completed_epochs_when_a_later_one_fails(classification_workdir):
+    """A failure part-way through must not discard the epochs that did finish."""
+    _, _, _, dataset, train_dl, val_dl, _, vt, pca = process_classification(classification_workdir)
+    model = bc.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    _, optimizer, scheduler, _ = bc.on_create_optimizer(model, "Adam", 0.01, 0.99)
+
+    st, _, _, epochs_done, train_losses, val_losses = bc.on_train(
+        model, dataset, train_dl, val_dl, "cpu", torch.float32, optimizer, scheduler, 2,
+        0, [], [], "GCN", "GCNConv", vt, pca, FakeProgress())
+    assert is_ok(st) and epochs_done == 2
+
+    # Now break the validation loader and ask for more epochs.
+    st, _, _, epochs_after, train_losses, val_losses = bc.on_train(
+        model, dataset, train_dl, None, "cpu", torch.float32, optimizer, scheduler, 3,
+        epochs_done, train_losses, val_losses, "GCN", "GCNConv", vt, pca, FakeProgress())
+
+    assert is_error(st)
+    assert epochs_after == 2
+    assert len(train_losses) == len(val_losses) == 2
+
+
+def test_training_refuses_a_model_on_another_device(classification_workdir):
+    """Regression: switching the Device dropdown after creating a model raised an uncaught
+    RuntimeError about mismatched tensors."""
+    _, _, _, dataset, train_dl, val_dl, _, vt, pca = process_classification(classification_workdir)
+    model = bc.on_create_model(*create_model_args(dataset, "GCN"))[-4]   # built on cpu
+    _, optimizer, scheduler, _ = bc.on_create_optimizer(model, "Adam", 0.01, 0.99)
+
+    status = bc.on_train(model, dataset, train_dl, val_dl, "cuda", torch.float32,
+                         optimizer, scheduler, 1, 0, [], [], "GCN", "GCNConv",
+                         vt, pca, FakeProgress())[0]
+    assert is_error(status)
+    assert "cpu" in status and "cuda" in status
 
 
 def test_create_model_resets_training_state(classification_workdir):
@@ -527,6 +662,54 @@ def test_export_without_data_reports_an_error(classification_workdir):
 
 
 # ------------------------------------------------------------- working directory listing
+
+def test_create_optimizer_without_a_model_reports_an_error():
+    """Regression: this raised AttributeError on None.parameters()."""
+    status, optimizer, scheduler, train_button = bc.on_create_optimizer(None, "Adam", 0.01, 0.99)
+    assert is_error(status)
+    assert optimizer is None and scheduler is None
+    assert train_button.get("interactive") is False
+
+
+def test_create_optimizer_rejects_an_unknown_optimizer(classification_workdir):
+    dataset = process_classification(classification_workdir)[3]
+    model = bc.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    status, optimizer, _, _ = bc.on_create_optimizer(model, "NotAnOptimizer", 0.01, 0.99)
+    assert is_error(status) and optimizer is None
+
+
+def test_content_listing_handles_a_missing_working_directory():
+    """Regression: reachable after a rejected directory name, and raised TypeError."""
+    result = bc.on_content_list_change(None, "dataset", "graphs", "fps", "checkpoint")
+    assert result[0].empty
+    assert len(result) == 9
+
+
+def test_working_directory_contents_of_none_is_empty():
+    """os.listdir(None) lists the current working directory, which is not what we want."""
+    assert bc.get_working_directory_contents(None) == []
+
+
+def test_pca_sliders_follow_the_checkbox_not_just_the_input_mode():
+    """Regression: choosing 'Both' revealed the PCA sliders even with the box unticked."""
+    unticked = bc.on_load_data_option_change("Both", False)
+    ticked = bc.on_load_data_option_change("Both", True)
+
+    assert unticked[3].get("visible") is False and unticked[4].get("visible") is False
+    assert ticked[3].get("visible") is True and ticked[4].get("visible") is True
+    assert bc.on_load_data_option_change("Graphs", True)[3].get("visible") is False
+
+
+def test_saving_over_an_existing_checkpoint_says_so(trained_classifier):
+    """Regression: the filename is derived from the epoch count, so this silently replaced
+    a previous file - including one from a different architecture."""
+    t = trained_classifier
+    first, _ = bc.on_save_checkpoint(t["workdir"], "ckpt", t["model"], t["trained_epochs"], None, None)
+    second, _ = bc.on_save_checkpoint(t["workdir"], "ckpt", t["model"], t["trained_epochs"], None, None)
+
+    assert is_ok(first) and "replaced" not in first
+    assert is_ok(second) and "replaced an existing file" in second
+
 
 def test_working_directory_listing_sorts_newest_first(classification_workdir):
     """Regression: rows were sorted on the ctime string, which orders by weekday name."""

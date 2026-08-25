@@ -3,14 +3,21 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
-from utils import list_graph_files
+from utils import list_graph_files, read_graph_manifest
+
+def _report_mismatch(index, graph_smiles, dataset_smiles):
+    raise ValueError(
+        f"Graph {index}.pt is for '{graph_smiles}' but row {index} of the dataset file is "
+        f"'{dataset_smiles}'. The graphs are out of sync with the dataset - please re-run "
+        "graph extraction."
+    )
 
 def _check_graphs_match_dataset(graph_directory_path, df):
     """Validate that graph <i>.pt lines up with row <i> of the dataset file.
 
     Graph and fingerprint extraction both rewrite the dataset CSV when a molecule fails, so
     running one after the other can leave the older artifacts shifted by a row. Comparing the
-    SMILES stored inside a few graphs against the CSV turns that silent mismatch into an error.
+    SMILES the graphs were built from against the CSV turns that silent mismatch into an error.
     """
     indices = list_graph_files(graph_directory_path)
     if len(indices) == 0:
@@ -26,16 +33,28 @@ def _check_graphs_match_dataset(graph_directory_path, df):
             f"dataset file ({len(df)}). Please re-run graph extraction."
         )
 
-    # Spot-check the ends and the middle: a dropped row shifts everything after it.
-    for idx in sorted({0, len(indices) // 2, len(indices) - 1}):
-        data = torch.load(os.path.join(graph_directory_path, f'{idx}.pt'), weights_only=False)
-        smiles = getattr(data, 'smiles', None)
-        if smiles is not None and smiles != df['SMILES'].iloc[idx]:
+    dataset_smiles = df['SMILES'].tolist()
+    manifest = read_graph_manifest(graph_directory_path)
+    if manifest is not None:
+        # Extractions since the manifest was introduced can be checked in full, for the cost
+        # of reading one small text file.
+        if len(manifest) != len(indices):
             raise ValueError(
-                f"Graph {idx}.pt is for '{smiles}' but row {idx} of the dataset file is "
-                f"'{df['SMILES'].iloc[idx]}'. The graphs are out of sync with the dataset - "
-                "please re-run graph extraction."
+                f"The graph manifest in {graph_directory_path} lists {len(manifest)} molecules "
+                f"but there are {len(indices)} graph files. Please re-run graph extraction."
             )
+        for index, (graph_smiles, row_smiles) in enumerate(zip(manifest, dataset_smiles)):
+            if graph_smiles != row_smiles:
+                _report_mismatch(index, graph_smiles, row_smiles)
+        return len(indices)
+
+    # Older extractions have no manifest, so fall back to spot-checking the ends and middle:
+    # a dropped row shifts everything after it.
+    for index in sorted({0, len(indices) // 2, len(indices) - 1}):
+        data = torch.load(os.path.join(graph_directory_path, f'{index}.pt'), weights_only=False)
+        graph_smiles = getattr(data, 'smiles', None)
+        if graph_smiles is not None and graph_smiles != dataset_smiles[index]:
+            _report_mismatch(index, graph_smiles, dataset_smiles[index])
     return len(indices)
 
 def _check_fingerprints_match_dataset(fingerprint_df, df, molecular_fingerprint_directory_path):

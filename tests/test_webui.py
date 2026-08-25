@@ -35,12 +35,24 @@ def test_all_tabs_build_together():
     assert len(blocks.blocks) > 100
 
 
-def test_reserve_available_port_returns_a_listening_socket():
+@pytest.fixture
+def free_port():
+    """Ask the OS for an unused port, then release it.
+
+    The tests below must not hardcode 7860 - a developer may well have something else
+    (including another copy of this app) already listening there.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_reserve_available_port_returns_a_listening_socket(free_port):
     import webui
 
-    sock, port = webui.reserve_available_port()
+    sock, port = webui.reserve_available_port(free_port)
     try:
-        assert 7860 <= port < 7960
+        assert port >= free_port
         assert sock.getsockname()[1] == port
         # The socket is held open, so nothing else can claim the port in the meantime.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as other:
@@ -50,15 +62,15 @@ def test_reserve_available_port_returns_a_listening_socket():
         sock.close()
 
 
-def test_reserve_available_port_skips_a_busy_port():
+def test_reserve_available_port_skips_a_busy_port(free_port):
     import webui
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
-        blocker.bind(("127.0.0.1", 7860))
+        blocker.bind(("127.0.0.1", free_port))
         blocker.listen(1)
-        sock, port = webui.reserve_available_port(7860)
+        sock, port = webui.reserve_available_port(free_port)
         try:
-            assert port > 7860
+            assert port > free_port
         finally:
             sock.close()
 

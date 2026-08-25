@@ -13,8 +13,8 @@ from conftest import FakeProgress, SMILES_3D, create_model_3d_args, is_error, is
 pytestmark = pytest.mark.slow
 
 
-def process_3d_classification(workdir):
-    return bc3.on_process_data(workdir, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, 0)
+def process_3d_classification(workdir, shuffle=False):
+    return bc3.on_process_data(workdir, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, shuffle, 0)
 
 
 @pytest.fixture
@@ -64,6 +64,52 @@ def test_create_each_3d_architecture(workdir_3d, architecture):
     result = bc3.on_create_model(*create_model_3d_args(dataset, architecture))
     assert is_ok(result[0]), result[0]
     assert result[-4] is not None
+
+
+def test_3d_creating_a_model_disables_training(workdir_3d):
+    dataset = process_3d_classification(workdir_3d)[2]
+    result = bc3.on_create_model(*create_model_3d_args(dataset, "SchNet"))
+    assert result[6].get("interactive") is False        # train_button
+
+    _, _, _, train_button = bc3.on_create_optimizer(result[-4], "Adam", 0.001, 0.99)
+    assert train_button.get("interactive") is True
+
+
+def test_3d_training_with_a_stale_optimizer_is_refused(workdir_3d):
+    _, _, dataset, train_dl, val_dl, _ = process_3d_classification(workdir_3d)
+    model_a = bc3.on_create_model(*create_model_3d_args(dataset, "SchNet"))[-4]
+    _, optimizer, scheduler, _ = bc3.on_create_optimizer(model_a, "Adam", 0.01, 0.99)
+    model_b = bc3.on_create_model(*create_model_3d_args(dataset, "SchNet",
+                                                        schnet_n_interactions=3))[-4]
+
+    status, _, _, trained_epochs, train_losses, _ = bc3.on_train(
+        model_b, train_dl, val_dl, "cpu", torch.float32, optimizer, scheduler, 1,
+        0, [], [], FakeProgress())
+
+    assert is_error(status) and "Create optimizer" in status
+    assert trained_epochs == 0 and train_losses == []
+
+
+def test_3d_training_reports_failures_instead_of_raising(workdir_3d):
+    _, _, dataset, train_dl, _, _ = process_3d_classification(workdir_3d)
+    model = bc3.on_create_model(*create_model_3d_args(dataset, "SchNet"))[-4]
+    _, optimizer, scheduler, _ = bc3.on_create_optimizer(model, "Adam", 0.001, 0.99)
+
+    status, figure, _, trained_epochs, train_losses, val_losses = bc3.on_train(
+        model, train_dl, None, "cpu", torch.float32, optimizer, scheduler, 1,
+        0, [], [], FakeProgress())
+
+    assert is_error(status)
+    assert len(train_losses) == len(val_losses) == trained_epochs
+    assert figure is not None
+
+
+def test_3d_shuffle_toggle(workdir_3d):
+    shuffled = process_3d_classification(workdir_3d, shuffle=True)[3]
+    assert [b.smiles for b in shuffled] != [b.smiles for b in shuffled]
+
+    fixed = process_3d_classification(workdir_3d, shuffle=False)[3]
+    assert [b.smiles for b in fixed] == [b.smiles for b in fixed]
 
 
 def test_unknown_architecture_is_reported_as_an_error(workdir_3d):
@@ -159,7 +205,7 @@ def test_3d_regression_flow(tmp_path, workdir_3d):
     df.to_csv(path, index=False)
 
     status, _, dataset, train_dl, val_dl, test_dl, scaler = rg3.on_process_data(
-        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, 0)
+        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, False, 0)
     assert is_ok(status), status
     assert scaler is not None
 
@@ -183,7 +229,7 @@ def test_3d_regression_checkpoint_carries_the_scaler(workdir_3d):
     df.to_csv(path, index=False)
 
     _, _, dataset, _, _, _, scaler = rg3.on_process_data(
-        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, 0)
+        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, False, 0)
     model = rg3.on_create_model(*create_model_3d_args(dataset, "SchNet"))[-4]
 
     rg3.on_save_checkpoint(workdir_3d, "ckpt", model, 0, scaler)
@@ -200,7 +246,7 @@ def test_3d_regression_evaluate_without_a_scaler_reports_an_error(workdir_3d):
     df.to_csv(path, index=False)
 
     _, _, dataset, _, _, test_dl, _ = rg3.on_process_data(
-        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, 0)
+        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, False, 0)
     model = rg3.on_create_model(*create_model_3d_args(dataset, "SchNet"))[-4]
 
     status, eval_df = rg3.on_evaluate(model, dataset, test_dl, "cpu", torch.float32, None)[:2]

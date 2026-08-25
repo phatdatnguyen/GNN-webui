@@ -21,8 +21,11 @@ def get_working_directories():
     return sorted(d for d in os.listdir(DATA_DIR) if os.path.isdir(os.path.join(DATA_DIR, d)))
 
 def get_working_directory_contents(working_directory_path):
-    contents = [f for f in os.listdir(working_directory_path)]
-    return contents
+    # os.listdir(None) silently lists the current working directory, which would show the
+    # repo root in the file browser after a failed "open working directory".
+    if not working_directory_path:
+        return []
+    return [f for f in os.listdir(working_directory_path)]
 
 def on_open_working_directory(working_directory_name):
     try:
@@ -38,6 +41,11 @@ def on_open_working_directory(working_directory_name):
     return gr.update(choices=get_working_directories(), value=working_directory_name), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), working_directory_path, files
 
 def on_content_list_change(working_directory_path, dataset_file_name, graph_directory, checkpoint_file_name):
+    if not working_directory_path:
+        # Reachable when opening a working directory failed and the path state was cleared.
+        empty = gr.update(choices=[], value=None)
+        return pd.DataFrame(columns=["File", "Type", "Modified"]), empty, empty, empty, empty, empty, empty
+
     contents = get_working_directory_contents(working_directory_path)
     # Update the file dataframe
     contents_info = []
@@ -125,7 +133,7 @@ def on_extract_graphs(working_directory_path, dataset_file_name, graph_directory
     status = extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory, number_of_conformers, force_field, datatype, progress)
     return status, get_working_directory_contents(working_directory_path)
 
-def on_process_data(working_directory_path, dataset_file_name, graph_directory, datatype, test_ratio, val_ratio, batch_size, random_seed):
+def on_process_data(working_directory_path, dataset_file_name, graph_directory, datatype, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed):
     try:
         # Validate inputs
         if graph_directory is None or graph_directory.strip() == "":
@@ -155,7 +163,11 @@ def on_process_data(working_directory_path, dataset_file_name, graph_directory, 
         
         train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=torch.Generator().manual_seed(random_seed))
         
-        train_dataloader = DataLoader(train_dataset, batch_size=batch_size)
+        # Re-shuffle the training set each epoch. The generator is seeded from the random seed
+        # so a shuffled run is still reproducible; turn the checkbox off for a fixed batch order.
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=bool(shuffle_training_data),
+                                      generator=torch.Generator().manual_seed(random_seed))
+        # Validation and test order does not affect the metrics, so leave them deterministic.
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
         test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
         
@@ -236,14 +248,16 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed,
         val_losses = []
         trained_epochs = 0
         
-        status = "Model created successfully."
+        status = "Model created successfully. Create an optimizer to start training."
+        # Training is disabled until an optimizer is created for *this* model: an optimizer
+        # captures the parameters it was built with, so a stale one silently updates nothing.
         return f"<span style='color: green;'>{status}</span>", \
-            gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), \
+            gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False), \
             model, train_losses, val_losses, trained_epochs
     except Exception as exc:
         status = f"Error creating model: {exc}"
         return f"<span style='color: red;'>{status}</span>", \
-            gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), \
+            gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), \
             model, train_losses, val_losses, trained_epochs
 
 def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_epochs, output_scaler):
@@ -260,8 +274,12 @@ def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_e
             'output_scaler': output_scaler
         }
         checkpoint_path = os.path.join(working_directory_path, f"{checkpoint_name}_{trained_epochs}.ckpt")
+        # The filename is derived from the epoch count, so re-saving replaces a previous file.
+        replaced = os.path.exists(checkpoint_path)
         torch.save(checkpoint, checkpoint_path)
         status = f"Model checkpoint saved: {checkpoint_name}_{trained_epochs}.ckpt"
+        if replaced:
+            status += " (replaced an existing file of the same name)"
         return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
     except Exception as exc:
         status = f"Error saving checkpoint: {exc}"
@@ -289,18 +307,26 @@ def on_load_checkpoint(working_directory_path, checkpoint_file_name, model, trai
 
 loss_fn = torch.nn.MSELoss()
 def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider):
-    optimizers = {
-        "Adam": torch.optim.Adam,
-        "AdamW": torch.optim.AdamW,
-        "SGD": torch.optim.SGD
-    }
-    opt_class = optimizers.get(optimizer_dropdown)
+    try:
+        if model is None:
+            raise ValueError("Please create a model first.")
+        optimizers = {
+            "Adam": torch.optim.Adam,
+            "AdamW": torch.optim.AdamW,
+            "SGD": torch.optim.SGD
+        }
+        opt_class = optimizers.get(optimizer_dropdown)
+        if opt_class is None:
+            raise ValueError(f"Unknown optimizer '{optimizer_dropdown}'.")
 
-    optimizer = opt_class(model.parameters(), lr=learning_rate_slider)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=learning_rate_decay_slider)
+        optimizer = opt_class(model.parameters(), lr=learning_rate_slider)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=learning_rate_decay_slider)
 
-    status = "Optimizer created."
-    return f"<span style='color: green;'>{status}</span>", optimizer, scheduler, gr.update(interactive=True)
+        status = "Optimizer created."
+        return f"<span style='color: green;'>{status}</span>", optimizer, scheduler, gr.update(interactive=True)
+    except Exception as exc:
+        status = f"Error creating optimizer: {exc}"
+        return f"<span style='color: red;'>{status}</span>", None, None, gr.update(interactive=False)
 
 # Define the train function
 def train(model, dataloader, device, datatype, output_scaler, optimizer):
@@ -364,18 +390,29 @@ def validation(model, dataloader, device, datatype, output_scaler):
     return math.sqrt(total_loss / num_samples) if num_samples > 0 else 0.0
 
 def on_train(model, train_dataloader, val_dataloader, device, datatype, output_scaler, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, progress=gr.Progress()):
-    # Training loop
-    for _ in progress.tqdm(range(trained_epochs, epochs + trained_epochs), total=epochs, desc="Training"):
-        train_loss = train(model, train_dataloader, device, datatype, output_scaler, optimizer)
-        train_losses.append(train_loss)
-        val_loss = validation(model, val_dataloader, device, datatype, output_scaler)
-        val_losses.append(val_loss)
-        scheduler.step()
-        trained_epochs += 1
+    try:
+        ensure_optimizer_matches_model(model, optimizer)
+        ensure_model_on_device(model, device)
+        if train_dataloader is None or val_dataloader is None:
+            raise ValueError("Please process the data first.")
+        if output_scaler is None:
+            raise ValueError("No output scaler is available. Please process the data first.")
 
-    status = f"Training completed for {trained_epochs} epochs."
+        # Training loop. Both losses are appended together and the epoch counter is bumped
+        # only after a full epoch, so a failure part-way through leaves consistent state.
+        for _ in progress.tqdm(range(trained_epochs, epochs + trained_epochs), total=epochs, desc="Training"):
+            train_loss = train(model, train_dataloader, device, datatype, output_scaler, optimizer)
+            val_loss = validation(model, val_dataloader, device, datatype, output_scaler)
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            scheduler.step()
+            trained_epochs += 1
 
-    # Plot the training and validation loss
+        status = f"<span style='color: green;'>Training completed for {trained_epochs} epochs.</span>"
+    except Exception as exc:
+        status = f"<span style='color: red;'>Error during training: {exc}</span>"
+
+    # Plot whatever was completed, so a mid-run failure does not discard finished epochs.
     figure = plt.figure(figsize=(10, 5))
     plt.plot(train_losses, label='Train loss')
     plt.plot(val_losses, label='Validation loss')
@@ -383,11 +420,11 @@ def on_train(model, train_dataloader, val_dataloader, device, datatype, output_s
     plt.ylabel('RMSE loss (scaled targets)')
     plt.legend()
     plt.grid(True)
-    plt.close()
+    plt.close(figure)
 
-    export_losses_button = gr.Button(value="Export", interactive=True)
+    export_losses_button = gr.Button(value="Export", interactive=bool(train_losses))
 
-    return f"<span style='color: green;'>{status}</span>", figure, export_losses_button, trained_epochs, train_losses, val_losses
+    return status, figure, export_losses_button, trained_epochs, train_losses, val_losses
 
 def on_export_losses(working_directory_path, file_name, train_losses, val_losses):
     try:
@@ -444,6 +481,7 @@ def on_evaluate(model, dataset, test_dataloader, device, datatype, output_scaler
             raise ValueError("Please process the data and create a model first.")
         if output_scaler is None:
             raise ValueError("No output scaler is available. Please process the data, or load a checkpoint that stores one.")
+        ensure_model_on_device(model, device)
         # Get test predictions
         y_test, y_pred, test_smiles_arr = test(model, test_dataloader, device, datatype, output_scaler)
         if len(test_smiles_arr) == 0:
@@ -545,6 +583,7 @@ def on_predict(model, dataset, predict_dataloader, device, datatype, output_scal
             raise ValueError("Please process the prediction data first.")
         if output_scaler is None:
             raise ValueError("No output scaler is available. Please process the data, or load a checkpoint that stores one.")
+        ensure_model_on_device(model, device)
         # Get predictions
         smiles_list, y_pred = predict(model, predict_dataloader, device, datatype, output_scaler)
         if len(smiles_list) == 0:
@@ -622,6 +661,8 @@ def regression_3d_tab_content():
                             test_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Test size")
                             val_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Validation size")
                             batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64, 128, 256, 512])
+                            shuffle_checkbox = gr.Checkbox(label="Shuffle training data each epoch", value=True,
+                                                           info="Shuffling is seeded from the random seed, so runs stay reproducible. Uncheck for a fixed batch order.")
                             process_data_button = gr.Button(value="Process data", interactive=False)
                             dataset_state = gr.State()
                             train_dataloader_state = gr.State()
@@ -752,7 +793,7 @@ def regression_3d_tab_content():
     extract_graphs_button.click(on_extract_graphs, [working_directory_path_state, dataset_file_feature_extraction_dropdown, graph_directory_textbox, number_of_conformers_slider, force_field_dropdown, datatype_state], [status_html, working_directory_content_list_state])
     
     # Process data interactions
-    process_data_button.click(on_process_data, [working_directory_path_state, dataset_file_process_data_dropdown, graph_directory_dropdown, datatype_state, test_size_slider, val_size_slider, batch_size_dropdown, random_seed_slider],
+    process_data_button.click(on_process_data, [working_directory_path_state, dataset_file_process_data_dropdown, graph_directory_dropdown, datatype_state, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, random_seed_slider],
                               [status_html, create_model_button, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state, output_scaler_state])
     
     # Create model interactions
@@ -760,7 +801,7 @@ def regression_3d_tab_content():
                                                 schnet_n_hiddens, schnet_n_filters, schnet_n_interactions, schnet_n_gaussians, schnet_cutoff, schnet_max_num_neighbors, schnet_readout, schnet_dipole,
                                                 dimenetplusplus_n_hiddens, dimenetplusplus_n_blocks, dimenetplusplus_int_emb_size, dimenetplusplus_basis_emb_size, dimenetplusplus_out_emb_channels, dimenetplusplus_n_spherical, dimenetplusplus_n_radial, dimenetplusplus_cutoff, dimenetplusplus_max_num_neighbors, dimenetplusplus_envelope_exponent, dimenetplusplus_n_output_layers,
                                                 visnet_n_hiddens, visnet_n_heads, visnet_n_layers, visnet_num_rbf, visnet_trainable_rbf, visnet_max_z, visnet_cutoff, visnet_max_num_neighbors, visnet_vertex],
-                                                [status_html, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, model_state, train_losses_state, val_losses_state, trained_epochs_state])
+                                                [status_html, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state])
     save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, output_scaler_state], [status_html, working_directory_content_list_state])
     load_checkpoint_button.click(on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, output_scaler_state],
                                  [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, output_scaler_state])

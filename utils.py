@@ -48,6 +48,52 @@ def list_graph_files(graph_directory_path):
     )
     return indices
 
+# Written alongside the graph shards so the dataset can verify alignment against the
+# dataset CSV completely, instead of spot-checking a few graphs.
+GRAPH_MANIFEST = "smiles.txt"
+
+def write_graph_manifest(graph_directory_path, smiles_list):
+    with open(os.path.join(graph_directory_path, GRAPH_MANIFEST), "w") as handle:
+        handle.write("\n".join(smiles_list))
+
+def read_graph_manifest(graph_directory_path):
+    """Return the SMILES the graphs were built from, or None for pre-manifest extractions."""
+    path = os.path.join(graph_directory_path, GRAPH_MANIFEST)
+    if not os.path.isfile(path):
+        return None
+    with open(path) as handle:
+        content = handle.read()
+    return content.split("\n") if content else []
+
+def ensure_optimizer_matches_model(model, optimizer):
+    """Guard against training with an optimizer built for a previous model.
+
+    The optimizer captures model.parameters() when it is created. If the user creates a new
+    model afterwards, backward() fills gradients on the new model while step() walks the old
+    parameter list - so nothing is updated and the loss sits perfectly flat.
+    """
+    if model is None:
+        raise ValueError("Please create a model first.")
+    if optimizer is None:
+        raise ValueError("Please create an optimizer first.")
+    model_parameters = {id(p) for p in model.parameters()}
+    optimizer_parameters = {id(p) for group in optimizer.param_groups for p in group['params']}
+    if model_parameters != optimizer_parameters:
+        raise ValueError("The optimizer belongs to a previously created model. "
+                         "Please click 'Create optimizer' again before training.")
+
+def ensure_model_on_device(model, device):
+    """The model is placed on a device once, at creation; the dropdown is read every run."""
+    if model is None:
+        raise ValueError("Please create a model first.")
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        return
+    if model_device.type != torch.device(device).type:
+        raise ValueError(f"The model is on '{model_device.type}' but the Device setting is "
+                         f"'{device}'. Re-create the model to move it to '{device}'.")
+
 def process_dataset_file(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_column_names, is_3d_dataset=False):
     try:
         dataset_name = sanitize_path_component(dataset_name, "dataset name")
@@ -72,19 +118,26 @@ def process_dataset_file(dataset_file_path, working_directory_path, dataset_name
         df = df.rename(columns={smiles_column: 'SMILES'}) # Rename the SMILES column to a standard name expected by the rest of the code
         df = df.dropna() # Remove the rows with no data
 
-        # Filter out invalid SMILES and those with no carbon or only 1 carbon
+        # Filter out invalid SMILES and those with no carbon.
+        # Build a mask in one pass: filtering the frame per rejected row is quadratic, and
+        # dropping by value would also take out unrelated duplicates of the same SMILES.
         salt_remover = SaltRemover.SaltRemover()
+        verdicts = {}
+        keep = []
         for smiles in df['SMILES']:
-            mol_obj = Chem.MolFromSmiles(smiles)
-            if mol_obj is None:
-                df = df[df['SMILES'] != smiles]
-                print(f"Invalid SMILES '{smiles}' removed from the dataset.")
-                continue
-            mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
-            carbon_count = sum(1 for atom in mol_obj.GetAtoms() if atom.GetAtomicNum() == 6)
-            if carbon_count == 0 or smiles == '[C]':
-                df = df[df['SMILES'] != smiles]
-                print(f"SMILES '{smiles}' with no carbon atom removed from the dataset.")
+            if smiles not in verdicts:
+                mol_obj = Chem.MolFromSmiles(smiles)
+                if mol_obj is None:
+                    verdicts[smiles] = False
+                    print(f"Invalid SMILES '{smiles}' removed from the dataset.")
+                else:
+                    mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
+                    carbon_count = sum(1 for atom in mol_obj.GetAtoms() if atom.GetAtomicNum() == 6)
+                    verdicts[smiles] = carbon_count > 0 and smiles != '[C]'
+                    if not verdicts[smiles]:
+                        print(f"SMILES '{smiles}' with no carbon atom removed from the dataset.")
+            keep.append(verdicts[smiles])
+        df = df[keep].reset_index(drop=True)
 
         # Save the uploaded dataset to the working directory
         save_path = os.path.join(working_directory_path, f"{dataset_name}.csv")
@@ -144,6 +197,7 @@ def extract_graphs(working_directory_path, dataset_file_name, graph_directory, g
 
         graph_count = graph_index
         n_failed = len(smiles_list) - graph_count
+        write_graph_manifest(graph_dir_path, [smiles_list[i] for i in successful_indices])
         if n_failed > 0:
             df.iloc[successful_indices].reset_index(drop=True).to_csv(dataset_file_path, index=False)
             status = f"{graph_count} graphs extracted to '{graph_directory}'; {n_failed} molecule(s) failed and were removed from {dataset_file_name}. Re-run molecular fingerprint extraction if previously done."
@@ -152,7 +206,7 @@ def extract_graphs(working_directory_path, dataset_file_name, graph_directory, g
         return f"<span style='color: green;'>{status}</span>"
     except Exception as exc:
         return f"<span style='color: red;'>Error extracting graphs: {exc}</span>"
-    
+
 def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory, num_conformers, force_field, datatype, progress):
     try:
         # This path is passed to shutil.rmtree below, so it must be a single safe component.
@@ -223,6 +277,7 @@ def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory
 
         graph_count = graph_index
         n_failed = len(smiles_list) - graph_count
+        write_graph_manifest(graph_dir_path, [smiles_list[i] for i in successful_indices])
         if n_failed > 0:
             df.iloc[successful_indices].reset_index(drop=True).to_csv(dataset_file_path, index=False)
             status = f"{graph_count} graphs extracted to '{graph_directory}'; {n_failed} molecule(s) failed conformer generation and were removed from {dataset_file_name}."

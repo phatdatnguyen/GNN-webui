@@ -44,7 +44,12 @@
       "PowerShell(wsl.exe -d Ubuntu -- bash -c \"cd /home/datnguyen/github/GNN-webui && for f in requirements.txt requirements-dev.txt pytest.ini tests/conftest.py; do printf '%-24s ' \\\\$f; git check-ignore -q \\\\$f && echo IGNORED || echo tracked-ok; done; echo '--- untracked ---'; git status --porcelain | head -20\")",
       "PowerShell(wsl.exe -d Ubuntu -- bash /tmp/ignorecheck.sh)",
       "PowerShell(wsl.exe -d Ubuntu -- bash /tmp/dup.sh 2>&1)",
-      "PowerShell(wsl.exe -d Ubuntu -- bash -c \"cd /home/datnguyen/github/GNN-webui && ./gnn-env/bin/python -m pytest --co -q 2>/dev/null | tail -3; echo '--- not slow ---'; ./gnn-env/bin/python -m pytest --co -q -m 'not slow' 2>/dev/null | tail -2\")"
+      "PowerShell(wsl.exe -d Ubuntu -- bash -c \"cd /home/datnguyen/github/GNN-webui && ./gnn-env/bin/python -m pytest --co -q 2>/dev/null | tail -3; echo '--- not slow ---'; ./gnn-env/bin/python -m pytest --co -q -m 'not slow' 2>/dev/null | tail -2\")",
+      "PowerShell(wsl.exe -d Ubuntu -- bash -c \"cd /home/datnguyen/github/GNN-webui && grep -n 'rg3.on_process_data' tests/test_handlers_3d.py\")",
+      "PowerShell(wsl.exe -d Ubuntu -- bash -c \"cd /home/datnguyen/github/GNN-webui && sed -i 's|workdir_3d, \\\\\"dataset.csv\\\\\", \\\\\"g3d\\\\\", torch.float32, 0.25, 0.25, 4, 0\\)|workdir_3d, \\\\\"dataset.csv\\\\\", \\\\\"g3d\\\\\", torch.float32, 0.25, 0.25, 4, False, 0\\)|g' tests/test_handlers_3d.py && grep -n 'torch.float32, 0.25' tests/test_handlers_3d.py\")",
+      "PowerShell(wsl.exe -d Ubuntu -- bash -c \"cd /home/datnguyen/github/GNN-webui && MPLBACKEND=Agg ./gnn-env/bin/python -m pytest tests/test_webui.py::test_reserve_available_port_skips_a_busy_port -q 2>&1 | grep -E '^E |Error|assert' | head -8; echo '--- listeners on 7860 ---'; ss -ltnp 2>/dev/null | grep 786 || echo none\")",
+      "PowerShell(wsl.exe -d Ubuntu -- bash -c \"cd /home/datnguyen/github/GNN-webui && MPLBACKEND=Agg PYTHONPATH=/home/datnguyen/github/GNN-webui ./gnn-env/bin/python /tmp/verify_fixes.py 2>&1 | grep -vE 'No normalization|Skipped loading|HuggingFaceModel' | tail -20\")",
+      "PowerShell(wsl.exe -d Ubuntu -- bash -c \"cd /home/datnguyen/github/GNN-webui && ./gnn-env/bin/python -m pytest --co -q -p no:cacheprovider 2>/dev/null | tail -2; sed -i 's/~323 tests/~346 tests/; s/~6s, 300 tests/~7s, 323 tests/' CLAUDE.md; grep -n 'tests' CLAUDE.md | head -5\")"
     ]
   }
 }
