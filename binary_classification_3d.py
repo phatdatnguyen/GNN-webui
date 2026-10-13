@@ -1,23 +1,23 @@
-import math
+import html
 import os
 import time
 import pandas as pd
 import gradio as gr
 import torch
-from torch_geometric.nn import summary
 from torch_geometric.nn.models import SchNet, DimeNetPlusPlus, ViSNet
 from torch_geometric.loader import DataLoader
-from sklearn.feature_selection import VarianceThreshold
-from sklearn.decomposition import PCA
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, auc, roc_curve
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, auc, roc_curve
+from evaluation_metrics import classification_metrics, metrics_from_predictions
 from matplotlib import pyplot as plt
 from datasets import MolecularDataset3D
+from ui_utils import bind_data_processing, bind_result_invalidation
 from models import *
 from utils import *
 
 def get_working_directories():
-    os.makedirs(DATA_DIR, exist_ok=True)
-    return sorted(d for d in os.listdir(DATA_DIR) if os.path.isdir(os.path.join(DATA_DIR, d)))
+    workflow_directory = os.path.join(DATA_DIR, "Classification")
+    os.makedirs(workflow_directory, exist_ok=True)
+    return sorted(d for d in os.listdir(workflow_directory) if os.path.isdir(os.path.join(workflow_directory, d)))
 
 def get_working_directory_contents(working_directory_path):
     # os.listdir(None) silently lists the current working directory, which would show the
@@ -33,7 +33,7 @@ def on_open_working_directory(working_directory_name):
         gr.Warning(str(exc))
         return None, gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), None, None
 
-    working_directory_path = os.path.join(DATA_DIR, working_directory_name)
+    working_directory_path = os.path.join(DATA_DIR, "Classification", working_directory_name)
     os.makedirs(working_directory_path, exist_ok=True)
     files = get_working_directory_contents(working_directory_path)
     
@@ -132,7 +132,7 @@ def on_extract_graphs(working_directory_path, dataset_file_name, graph_directory
     status = extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory, number_of_conformers, force_field, datatype, progress)
     return status, get_working_directory_contents(working_directory_path)
 
-def on_process_data(working_directory_path, dataset_file_name, graph_directory, datatype, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed):
+def on_process_data(working_directory_path, dataset_file_name, graph_directory, datatype, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed, split_method="Random"):
     try:
         # Validate inputs
         if graph_directory is None or graph_directory.strip() == "":
@@ -145,6 +145,10 @@ def on_process_data(working_directory_path, dataset_file_name, graph_directory, 
         if len(target_columns_list) == 0:
             raise ValueError("No target columns found in the dataset. Please ensure your dataset has at least one target column in addition to the SMILES column.")
         for col in target_columns_list:
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                raise ValueError(f"Target column '{col}' is not numeric. Please ensure all target columns are numeric.")
+            if not np.isfinite(df[col].to_numpy()).all():
+                raise ValueError(f"Target column '{col}' contains missing or non-finite values. Please remove or replace them before training.")
             # Drop NaN values and get unique values
             unique_values = df[col].dropna().unique()
             num_unique = len(unique_values)
@@ -160,13 +164,9 @@ def on_process_data(working_directory_path, dataset_file_name, graph_directory, 
         dataset = MolecularDataset3D(dataset_file_path, graph_directory_path, datatype)
         
         total_len = len(dataset)
-        test_size = int(total_len * test_ratio)
-        val_size = int(total_len * val_ratio)
-        train_size = total_len - test_size - val_size
-        if train_size <= 0 or val_size < 0 or test_size < 0:
-            raise ValueError("Invalid split sizes. Please adjust test/val sizes.")
-        
-        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=torch.Generator().manual_seed(random_seed))
+        train_dataset, val_dataset, test_dataset = split_molecular_dataset(
+            dataset, test_ratio, val_ratio, random_seed, split_method)
+
         
         # Re-shuffle the training set each epoch. The generator is seeded from the random seed
         # so a shuffled run is still reproducible; turn the checkbox off for a fixed batch order.
@@ -176,7 +176,12 @@ def on_process_data(working_directory_path, dataset_file_name, graph_directory, 
         val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
         test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
         
-        status = f"Data processed: {total_len} molecules."
+        status = (f"Data processed: {total_len} molecules. {split_method} split: "
+                  f"{len(train_dataset)} training, {len(val_dataset)} validation, "
+                  f"{len(test_dataset)} test.")
+        if split_method == "Scaffold":
+            status += " Scaffold groups are kept together, so split sizes may differ from the requested ratios."
+        status += " Create a model for this split before training or evaluation."
         return f"<span style='color: green;'>{status}</span>", gr.update(interactive=True), dataset, train_dataloader, val_dataloader, test_dataloader
     except Exception as exc:
         status = f"Error processing data: {exc}"
@@ -286,13 +291,9 @@ def on_load_checkpoint(working_directory_path, checkpoint_file_name, model, trai
     try:
         if model is None:
             raise ValueError("Please create a model first, so the checkpoint has an architecture to load into.")
+        checkpoint_file_name = sanitize_path_component(checkpoint_file_name, "checkpoint file name")
         checkpoint_file_path = os.path.join(working_directory_path, checkpoint_file_name)
-        checkpoint = torch.load(checkpoint_file_path, weights_only=False)
-        saved_class = checkpoint.get('model_class')
-        if saved_class is not None and saved_class != type(model).__name__:
-            raise ValueError(f"This checkpoint was saved from a {saved_class} but the current model is a "
-                             f"{type(model).__name__}. Re-create the model with the original architecture first.")
-        model.load_state_dict(checkpoint['state_dict'])
+        checkpoint = load_model_checkpoint(model, checkpoint_file_path)
 
         status = f"Checkpoint loaded: {checkpoint_file_name}."
         return f"<span style='color: green;'>{status}</span>", model, [], [], checkpoint.get('trained_epochs', 0)
@@ -332,7 +333,7 @@ def train(model, dataloader, device, datatype, optimizer):
 
     for batch in dataloader:
         # Get input data
-        z = batch.z.to(device=device, dtype=torch.int32)
+        z = batch.z.to(device=device, dtype=torch.long)
         pos = batch.pos.to(device=device, dtype=datatype)
         batch_index = batch.batch.to(device=device)
 
@@ -347,6 +348,8 @@ def train(model, dataloader, device, datatype, optimizer):
 
         # Compute loss and backpropagate
         loss = loss_fn(output, y)
+        if not torch.isfinite(loss):
+            raise ValueError("Training loss is not finite. Try a lower learning rate or float32 data type.")
         loss.backward()
         optimizer.step()
         # Weight by batch size so the epoch loss does not depend on how the final batch is sized.
@@ -364,7 +367,7 @@ def validation(model, dataloader, device, datatype):
 
     for batch in dataloader:
         # Get input data
-        z = batch.z.to(device=device, dtype=torch.int32)
+        z = batch.z.to(device=device, dtype=torch.long)
         pos = batch.pos.to(device=device, dtype=datatype)
         batch_index = batch.batch.to(device=device)
         
@@ -379,6 +382,8 @@ def validation(model, dataloader, device, datatype):
 
             # Compute loss
             loss = loss_fn(output, y)
+            if not torch.isfinite(loss):
+                raise ValueError("Validation loss is not finite. Try a lower learning rate or float32 data type.")
             total_loss += loss.item() * y.shape[0]
         num_samples += y.shape[0]
 
@@ -398,8 +403,8 @@ def on_train(model, train_dataloader, val_dataloader, device, datatype, optimize
             val_loss = validation(model, val_dataloader, device, datatype)
             train_losses.append(train_loss)
             val_losses.append(val_loss)
-            scheduler.step()
             trained_epochs += 1
+            scheduler.step()
 
         status = f"<span style='color: green;'>Training completed for {trained_epochs} epochs.</span>"
     except Exception as exc:
@@ -445,7 +450,7 @@ def test(model, dataloader, device, datatype):
     
     for batch in dataloader:
         # Get input data
-        z = batch.z.to(device=device, dtype=torch.int32)
+        z = batch.z.to(device=device, dtype=torch.long)
         pos = batch.pos.to(device=device, dtype=datatype)
         batch_index = batch.batch.to(device=device)
 
@@ -496,22 +501,9 @@ def on_evaluate(model, dataset, test_dataloader, device, datatype):
         ax.set_title('Confusion Matrix')
         plt.close(cm_figure)
 
-        accuracy = round(accuracy_score(y_test_np, y_pred_np), 4)
-        precision = round(precision_score(y_test_np, y_pred_np, zero_division=0), 4)
-        recall = round(recall_score(y_test_np, y_pred_np, zero_division=0), 4)
-        f1 = round(f1_score(y_test_np, y_pred_np, zero_division=0), 4)
-        TN = cm[0, 0]
-        FP = cm[0, 1]
-        specificity = round(TN / (TN + FP), 4) if (TN + FP) > 0 else 0.0
-
+        metrics_df = classification_metrics(y_test_np, y_pred_np, probabilities_np)
         # ROC-AUC and the ROC curve are undefined when the test split holds a single class.
         single_class = len(set(y_test_np.tolist())) < 2
-        roc_auc = float('nan') if single_class else round(roc_auc_score(y_test_np, probabilities_np), 4)
-
-        metrics_df = pd.DataFrame({
-            'Metric': ['Accuracy', 'Precision', 'Recall', 'Specificity', 'F1 score', 'ROC-AUC score'],
-            'Value': [accuracy, precision, recall, specificity, f1, roc_auc]
-        })
 
         roc_auc_figure = plt.figure(figsize=(6, 6))
         if single_class:
@@ -533,23 +525,31 @@ def on_evaluate(model, dataset, test_dataloader, device, datatype):
         plt.close(roc_auc_figure)
         status = f"Evaluation completed."
 
-        return f"<span style='color: green;'>{status}</span>", eval_df, metrics_df, cm_figure, roc_auc_figure, gr.update(interactive=True)
+        return f"<span style='color: green;'>{status}</span>", eval_df, metrics_df, cm_figure, roc_auc_figure, gr.update(interactive=True), gr.update(interactive=True)
     except Exception as exc:
         status = f"Error evaluating model: {exc}"
-        return f"<span style='color: red;'>{status}</span>", None, None, None, None, gr.update(interactive=False)
+        return f"<span style='color: red;'>{status}</span>", None, None, None, None, gr.update(interactive=False), gr.update(interactive=False)
 
 def on_export_evaluation(working_directory_path, file_name, eval_df):
     try:
-        if eval_df is None:
-            raise ValueError("Please run an evaluation first.")
-        file_name = sanitize_path_component(file_name, "file name")
-        file_path = os.path.join(working_directory_path, f"{file_name}.csv")
-        eval_df.to_csv(file_path, index=False)
-        status = f"Evaluation exported: {file_name}.csv"
-        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+        filename = export_result_csv(working_directory_path, file_name, eval_df)
+        status = f"Evaluation rows exported: {filename}"
+        return f"<span style='color: green;'>{html.escape(status)}</span>", get_working_directory_contents(working_directory_path)
     except Exception as exc:
         status = f"Error exporting evaluation: {exc}"
-        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
+        return f"<span style='color: red;'>{html.escape(status)}</span>", gr.update()
+
+def on_export_metrics(working_directory_path, file_name, eval_df, dataset):
+    try:
+        if dataset is None or dataset.target_column_name is None:
+            raise ValueError("Please process labeled data and run an evaluation first.")
+        metrics = metrics_from_predictions("classification", eval_df, [dataset.target_column_name])
+        filename = export_result_csv(working_directory_path, file_name, metrics)
+        status = f"Test metrics exported: {filename}"
+        return f"<span style='color: green;'>{html.escape(status)}</span>", get_working_directory_contents(working_directory_path)
+    except Exception as exc:
+        status = f"Error exporting test metrics: {exc}"
+        return f"<span style='color: red;'>{html.escape(status)}</span>", gr.update()
 
 def on_process_prediction_data(working_directory_path, prediction_dataset_file, prediction_graph_directory, datatype, batch_size):
     try:
@@ -574,7 +574,7 @@ def predict(model, dataloader, device, datatype):
     
     for batch in dataloader:
         # Get input data
-        z = batch.z.to(device=device, dtype=torch.int32)
+        z = batch.z.to(device=device, dtype=torch.long)
         pos = batch.pos.to(device=device, dtype=datatype)
         batch_index = batch.batch.to(device=device)
         
@@ -630,10 +630,11 @@ def on_export_prediction(working_directory_path, prediction_file_name, predictio
         return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
 def binary_classification_3d_tab_content():
-    with gr.Tab("Binary Classification 3D") as binary_classification_3d_tab:
+    with gr.Tab("Binary Classification - 3D GNN") as binary_classification_3d_tab:
         with gr.Row():
             with gr.Column(scale=1):
-                working_directory_dropdown = gr.Dropdown(label="Working Directory", choices=get_working_directories(), value="wd", allow_custom_value=True)
+                working_directory_dropdown = gr.Dropdown(label="Working Directory", choices=get_working_directories(), value="wd", allow_custom_value=True,
+                                                         info="Folders in Data/Classification. Select one or enter a new folder name.")
                 working_directory_path_state = gr.State()
                 open_working_directory_button = gr.Button(value="Create/Open Working Directory")
                 working_directory_content_list_state = gr.State()
@@ -672,6 +673,9 @@ def binary_classification_3d_tab_content():
                         with gr.Column(scale=1):
                             graph_directory_dropdown = gr.Dropdown(label="3D graph directory", choices=[])
                         with gr.Column(scale=1):
+                            split_method_radio = gr.Radio(
+                                label="Split method", choices=["Random", "Scaffold"], value="Random",
+                                info="Scaffold keeps molecules with the same Murcko scaffold in one split. Sizes are approximate; all acyclic molecules share one scaffold.")
                             test_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Test size")
                             val_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Validation size")
                             batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64, 128, 256, 512])
@@ -766,14 +770,17 @@ def binary_classification_3d_tab_content():
                         with gr.Column(scale=1):
                             evaluate_button = gr.Button(value="Evaluate", interactive=False)
                             evaluation_metrics_dataframe = gr.DataFrame(label="Evaluation metrics", wrap=False, interactive=False)
-                            evaluation_file_name_textbox = gr.Textbox(label="File name", value="evaluation")
-                            export_evaluation_button = gr.Button(value="Export", interactive=False)
+                            gr.Markdown("AUPRC uses trapezoidal integration; average precision is reported separately. "
+                                        "NaN marks unavailable metrics. Ranking and balanced metrics are reported only when both classes are present.")
+                            metrics_file_name_textbox = gr.Textbox(label="Metrics export file", value="test_metrics")
+                            export_metrics_button = gr.Button(value="Export test metrics (all targets)", interactive=False)
+                            evaluation_file_name_textbox = gr.Textbox(label="Evaluation export file", value="evaluation")
+                            export_evaluation_button = gr.Button(value="Export evaluation rows (all targets)", interactive=False)
                             evaluation_df_state = gr.State()
-                        with gr.Column(scale=1):
+                        with gr.Column(scale=2):
                             confusion_matrix_plot = gr.Plot()
-                        with gr.Column(scale=1):
                             roc_auc_curve_plot = gr.Plot()
-                with gr.Accordion("Make prediction"):
+                with gr.Accordion("Make predictions"):
                     with gr.Row():
                         with gr.Column(scale=1):
                             prediction_dataset_file_dropdown = gr.Dropdown(label="Prediction dataset file", choices=[])
@@ -808,29 +815,46 @@ def binary_classification_3d_tab_content():
     extract_graphs_button.click(on_extract_graphs, [working_directory_path_state, dataset_file_feature_extraction_dropdown, graph_directory_textbox, number_of_conformers_slider, force_field_dropdown, datatype_state], [status_html, working_directory_content_list_state])
     
     # Process data interactions
-    process_data_button.click(on_process_data, [working_directory_path_state, dataset_file_process_data_dropdown, graph_directory_dropdown, datatype_state, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, random_seed_slider],
-                              [status_html, create_model_button, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state])
+    bind_data_processing(
+        process_data_button, on_process_data,
+        [working_directory_path_state, dataset_file_process_data_dropdown, graph_directory_dropdown, datatype_state, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, random_seed_slider, split_method_radio],
+        [status_html, create_model_button, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state],
+        clear_states=[model_state, optimizer_state, schedular_state, evaluation_df_state,
+                      prediction_dataset_state, prediction_dataloader_state],
+        loss_states=[train_losses_state, val_losses_state], epoch_state=trained_epochs_state,
+        disable_buttons=[create_optimizer_button, train_button, evaluate_button,
+                         save_checkpoint_button, load_checkpoint_button, process_prediction_data_button,
+                         predict_button, export_losses_button, export_evaluation_button, export_metrics_button, export_prediction_button],
+        clear_components=[training_plot, evaluation_metrics_dataframe, confusion_matrix_plot,
+                          roc_auc_curve_plot, prediction_dataframe],
+    )
     
     # Create model interactions
-    create_model_button.click(on_create_model, [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, random_seed_slider,
+    result_reset = dict(
+        clear_states=[evaluation_df_state],
+        disable_buttons=[export_evaluation_button, export_metrics_button, export_prediction_button],
+        clear_components=[evaluation_metrics_dataframe, confusion_matrix_plot, roc_auc_curve_plot, prediction_dataframe],
+    )
+    bind_result_invalidation(create_model_button, on_create_model, [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, random_seed_slider,
                                                 schnet_n_hiddens, schnet_n_filters, schnet_n_interactions, schnet_n_gaussians, schnet_cutoff, schnet_max_num_neighbors, schnet_readout, schnet_dipole,
                                                 dimenetplusplus_n_hiddens, dimenetplusplus_n_blocks, dimenetplusplus_int_emb_size, dimenetplusplus_basis_emb_size, dimenetplusplus_out_emb_channels, dimenetplusplus_n_spherical, dimenetplusplus_n_radial, dimenetplusplus_cutoff, dimenetplusplus_max_num_neighbors, dimenetplusplus_envelope_exponent, dimenetplusplus_n_output_layers,
                                                 visnet_n_hiddens, visnet_n_heads, visnet_n_layers, visnet_num_rbf, visnet_trainable_rbf, visnet_max_z, visnet_cutoff, visnet_max_num_neighbors, visnet_vertex],
-                                                [status_html, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state])
+                                                [status_html, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state], **result_reset)
     save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state], [status_html, working_directory_content_list_state])
-    load_checkpoint_button.click(on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state], [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state])
+    bind_result_invalidation(load_checkpoint_button, on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state], [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state], **result_reset)
     
     # Train model interactions
     create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [status_html, optimizer_state, schedular_state, train_button])
-    train_button.click(on_train, [model_state, train_dataloader_state, val_dataloader_state, device_dropdown, datatype_state,
+    bind_result_invalidation(train_button, on_train, [model_state, train_dataloader_state, val_dataloader_state, device_dropdown, datatype_state,
                                   optimizer_state, schedular_state, epochs_slider, trained_epochs_state, train_losses_state, val_losses_state],
-                                 [status_html, training_plot, export_losses_button, trained_epochs_state, train_losses_state, val_losses_state])
+                                 [status_html, training_plot, export_losses_button, trained_epochs_state, train_losses_state, val_losses_state], **result_reset)
     export_losses_button.click(on_export_losses, [working_directory_path_state, loss_file_name_textbox, train_losses_state, val_losses_state], [status_html, working_directory_content_list_state])
     
     # Evaluate model interactions
     evaluate_button.click(on_evaluate, [model_state, dataset_state, test_dataloader_state, device_dropdown, datatype_state],
-                                       [status_html, evaluation_df_state, evaluation_metrics_dataframe, confusion_matrix_plot, roc_auc_curve_plot, export_evaluation_button])
+                                       [status_html, evaluation_df_state, evaluation_metrics_dataframe, confusion_matrix_plot, roc_auc_curve_plot, export_evaluation_button, export_metrics_button])
     export_evaluation_button.click(on_export_evaluation, [working_directory_path_state, evaluation_file_name_textbox, evaluation_df_state], [status_html, working_directory_content_list_state])
+    export_metrics_button.click(on_export_metrics, [working_directory_path_state, metrics_file_name_textbox, evaluation_df_state, dataset_state], [status_html, working_directory_content_list_state])
         
     # Make prediction interactions
     process_prediction_data_button.click(on_process_prediction_data, [working_directory_path_state, prediction_dataset_file_dropdown, prediction_graph_directory_dropdown, datatype_state, batch_size_dropdown], [status_html, prediction_dataset_state, prediction_dataloader_state, predict_button])

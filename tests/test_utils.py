@@ -1,5 +1,6 @@
 """Tests for the dataset preparation and feature extraction helpers in utils.py."""
 import os
+import json
 
 import pandas as pd
 import pytest
@@ -37,6 +38,33 @@ def test_sanitize_error_mentions_the_label():
         utils.sanitize_path_component("../x", "checkpoint name")
 
 
+@pytest.mark.parametrize("name", ["metrics", "metrics.csv", "metrics.CSV"])
+def test_result_export_writes_csv_without_an_extra_index_or_extension(tmp_path, name):
+    frame = pd.DataFrame({"Target": ["assay"], "Metric": ["ROC-AUC score"], "Value": [0.875]})
+    filename = utils.export_result_csv(str(tmp_path), name, frame)
+    expected = name if name.lower().endswith(".csv") else name + ".csv"
+    assert filename == expected
+    assert [path.name for path in tmp_path.iterdir()] == [expected]
+    pd.testing.assert_frame_equal(pd.read_csv(tmp_path / expected), frame)
+
+
+@pytest.mark.parametrize("frame", [None, pd.DataFrame(), pd.DataFrame(columns=["SMILES"])])
+def test_result_export_rejects_absent_rows(tmp_path, frame):
+    with pytest.raises(ValueError, match="produce results"):
+        utils.export_result_csv(str(tmp_path), "evaluation", frame)
+    assert not list(tmp_path.iterdir())
+
+
+def test_result_export_requires_open_directory_and_safe_name(tmp_path):
+    frame = pd.DataFrame({"target": [1]})
+    for directory in (None, str(tmp_path / "missing")):
+        with pytest.raises(ValueError, match="working directory"):
+            utils.export_result_csv(directory, "results", frame)
+    with pytest.raises(ValueError, match="export file name"):
+        utils.export_result_csv(str(tmp_path), "../outside", frame)
+    assert not list(tmp_path.iterdir())
+
+
 # ------------------------------------------------------------------------ graph listing
 
 def test_list_graph_files_orders_numerically(tmp_path):
@@ -53,6 +81,9 @@ def test_list_graph_files_ignores_unrelated_entries(tmp_path):
     (tmp_path / "backup.pt.bak").write_text("x")
     (tmp_path / "graph_a.pt").write_text("x")
     (tmp_path / "subdir").mkdir()
+    (tmp_path / "2.pt").mkdir()
+    (tmp_path / "03.pt").write_text("not a canonical shard name")
+    (tmp_path / "².pt").write_text("not an integer filename")
     assert utils.list_graph_files(str(tmp_path)) == [0, 1]
 
 
@@ -99,6 +130,20 @@ def test_process_dataset_file_drops_rows_with_missing_values(tmp_path):
     pd.DataFrame({"smiles": ["CCO", "CCN", "CCC"], "target": [1, None, 0]}).to_csv(path, index=False)
     _, df = utils.process_dataset_file(str(path), str(tmp_path), "dataset", "smiles", "target")
     assert df["SMILES"].tolist() == ["CCO", "CCC"]
+
+
+@pytest.mark.parametrize("smiles, targets", [(["NOT_A_SMILES", "O"], [1, 0]), (["CCO"], [None]), ([], [])])
+def test_empty_upload_does_not_overwrite_existing_dataset(tmp_path, smiles, targets):
+    destination = tmp_path / "dataset.csv"
+    previous = "SMILES,target\nCCO,1\n"
+    destination.write_text(previous)
+    source = _source(tmp_path, smiles, targets)
+
+    status, df = utils.process_dataset_file(source, str(tmp_path), "dataset", "smiles", "target")
+
+    assert "color: red" in status and "No valid molecules" in status
+    assert df is None
+    assert destination.read_text() == previous
 
 
 def test_process_dataset_file_supports_multiple_targets(tmp_path):
@@ -234,6 +279,12 @@ def test_every_offered_fingerprint_works(tmp_path, fingerprint, progress):
     assert df.shape == (2, 65)                       # SMILES + 64 bits
     assert df.columns[0] == "SMILES"
     assert df["SMILES"].tolist() == ["CCO", "c1ccccc1"]
+    with open(tmp_path / "fps" / utils.FINGERPRINT_CONFIG) as handle:
+        assert json.load(handle) == {
+            "name": fingerprint,
+            "radius": 2 if fingerprint == "Morgan fingerprint" else None,
+            "number_of_bits": 64,
+        }
 
 
 def test_fingerprint_bit_width_follows_setting(tmp_path, progress):
@@ -284,3 +335,214 @@ def test_both_force_fields_work(tmp_path, force_field, progress):
                                      force_field, torch.float32, progress)
     assert "color: green" in status, status
     assert utils.list_graph_files(os.path.join(tmp_path, "g3d")) == [0, 1]
+
+
+# -------------------------------------------------------------- extraction preservation
+
+def _extract(kind, directory, progress, dataset_file_name="dataset.csv"):
+    if kind == "graphs":
+        return utils.extract_graphs(str(directory), dataset_file_name, "features",
+                                    "MolGraphConvFeaturizer", torch.float32, progress)
+    if kind == "3d":
+        return utils.extract_3d_graphs(str(directory), dataset_file_name, "features",
+                                       1, "MMFF", torch.float32, progress)
+    return utils.extract_molecule_fingerprints(str(directory), dataset_file_name, "features",
+                                               "Morgan fingerprint", 2, 64, progress)
+
+
+def _existing_extraction(tmp_path, smiles):
+    dataset_path = tmp_path / "dataset.csv"
+    pd.DataFrame({"SMILES": smiles, "target": range(len(smiles))}).to_csv(dataset_path, index=False)
+    output = tmp_path / "features"
+    output.mkdir()
+    (output / "previous.pt").write_bytes(b"previous extracted features")
+    return dataset_path.read_bytes()
+
+
+def _assert_extraction_preserved(tmp_path, dataset_contents):
+    assert (tmp_path / "dataset.csv").read_bytes() == dataset_contents
+    assert (tmp_path / "features" / "previous.pt").read_bytes() == b"previous extracted features"
+    assert sorted(p.name for p in (tmp_path / "features").iterdir()) == ["previous.pt"]
+    assert not list(tmp_path.glob(".extraction-*"))
+    assert not list(tmp_path.glob(".features-backup-*"))
+
+
+@pytest.mark.parametrize("kind", ["graphs", "3d", "fingerprints"])
+def test_failed_extraction_preserves_dataset_and_previous_features(tmp_path, progress, monkeypatch, kind):
+    """Regression: if every molecule failed, extraction erased the dataset and still reported success."""
+    contents = _existing_extraction(tmp_path, ["CCO", "CCN"])
+    monkeypatch.setattr(utils.Chem, "MolFromSmiles", lambda smiles: None)
+
+    status = _extract(kind, tmp_path, progress)
+
+    assert "color: red" in status and "No molecules" in status
+    _assert_extraction_preserved(tmp_path, contents)
+
+
+@pytest.mark.parametrize("kind", ["graphs", "3d", "fingerprints"])
+def test_interrupted_extraction_preserves_previous_features(tmp_path, kind):
+    contents = _existing_extraction(tmp_path, ["CCO"])
+
+    class InterruptedProgress:
+        def tqdm(self, iterable, **kwargs):
+            raise RuntimeError("extraction interrupted")
+
+    status = _extract(kind, tmp_path, InterruptedProgress())
+
+    assert "color: red" in status and "extraction interrupted" in status
+    _assert_extraction_preserved(tmp_path, contents)
+
+
+def test_fingerprint_metadata_write_failure_preserves_previous_extraction(tmp_path, progress, monkeypatch):
+    contents = _existing_extraction(tmp_path, ["CCO", "NOT_A_SMILES"])
+
+    def fail_metadata_save(*args, **kwargs):
+        raise OSError("metadata disk full")
+
+    monkeypatch.setattr(utils.json, "dump", fail_metadata_save)
+    status = _extract("fingerprints", tmp_path, progress)
+
+    assert "color: red" in status and "metadata disk full" in status
+    _assert_extraction_preserved(tmp_path, contents)
+
+
+@pytest.mark.parametrize("kind", ["graphs", "fingerprints", pytest.param("3d", marks=pytest.mark.slow)])
+def test_partial_extraction_publishes_aligned_features(tmp_path, progress, kind):
+    _existing_extraction(tmp_path, ["CCO", "NOT_A_SMILES", "CCN"])
+
+    status = _extract(kind, tmp_path, progress)
+
+    assert "color: green" in status, status
+    df = pd.read_csv(tmp_path / "dataset.csv")
+    assert df["SMILES"].tolist() == ["CCO", "CCN"]
+    assert df["target"].tolist() == [0, 2]
+    assert not (tmp_path / "features" / "previous.pt").exists()
+    if kind == "fingerprints":
+        assert pd.read_csv(tmp_path / "features" / "molecular_fingerprints.csv")["SMILES"].tolist() == ["CCO", "CCN"]
+    else:
+        assert utils.read_graph_manifest(tmp_path / "features") == ["CCO", "CCN"]
+        assert utils.list_graph_files(tmp_path / "features") == [0, 1]
+        for i, smiles in enumerate(["CCO", "CCN"]):
+            assert torch.load(tmp_path / "features" / f"{i}.pt", weights_only=False).smiles == smiles
+
+
+@pytest.mark.parametrize("kind", ["graphs", pytest.param("3d", marks=pytest.mark.slow)])
+def test_graph_save_failure_does_not_remove_valid_molecules(tmp_path, progress, monkeypatch, kind):
+    contents = _existing_extraction(tmp_path, ["CCO", "CCN"])
+    original_save = utils.torch.save
+
+    def fail_second_save(data, path):
+        if os.path.basename(path) == "1.pt":
+            raise OSError("disk full")
+        return original_save(data, path)
+
+    monkeypatch.setattr(utils.torch, "save", fail_second_save)
+    status = _extract(kind, tmp_path, progress)
+
+    assert "color: red" in status and "disk full" in status
+    _assert_extraction_preserved(tmp_path, contents)
+
+
+def test_dataset_save_failure_restores_previous_features(tmp_path, progress, monkeypatch):
+    contents = _existing_extraction(tmp_path, ["CCO", "NOT_A_SMILES"])
+    original_replace = utils.os.replace
+
+    def fail_dataset_replace(source, destination):
+        if str(destination) == str(tmp_path / "dataset.csv"):
+            raise OSError("dataset is read-only")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(utils.os, "replace", fail_dataset_replace)
+    status = _extract("graphs", tmp_path, progress)
+
+    assert "color: red" in status and "dataset is read-only" in status
+    _assert_extraction_preserved(tmp_path, contents)
+
+
+@pytest.mark.parametrize("interrupt_phase", ["backup", "before_publish", "after_publish"])
+def test_publication_interrupt_restores_previous_features(tmp_path, progress, monkeypatch, interrupt_phase):
+    contents = _existing_extraction(tmp_path, ["CCO", "NOT_A_SMILES"])
+    original_replace = utils.os.replace
+
+    def interrupt_publication(source, destination):
+        if interrupt_phase == "backup" and ".features-backup-" in str(destination):
+            original_replace(source, destination)
+            raise KeyboardInterrupt("publication interrupted")
+        if (interrupt_phase != "backup" and str(destination) == str(tmp_path / "features")
+                and ".extraction-" in str(source)):
+            if interrupt_phase == "after_publish":
+                original_replace(source, destination)
+            raise KeyboardInterrupt("publication interrupted")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(utils.os, "replace", interrupt_publication)
+    with pytest.raises(KeyboardInterrupt, match="publication interrupted"):
+        _extract("graphs", tmp_path, progress)
+
+    _assert_extraction_preserved(tmp_path, contents)
+
+
+def test_failed_restoration_preserves_backup_outside_staging_directory(tmp_path, progress, monkeypatch):
+    contents = _existing_extraction(tmp_path, ["CCO", "NOT_A_SMILES"])
+    original_replace = utils.os.replace
+
+    def fail_publication_and_restoration(source, destination):
+        if str(destination) == str(tmp_path / "dataset.csv"):
+            raise OSError("dataset is read-only")
+        if str(destination) == str(tmp_path / "features") and ".features-backup-" in str(source):
+            raise OSError("restoration denied")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(utils.os, "replace", fail_publication_and_restoration)
+    status = _extract("graphs", tmp_path, progress)
+
+    assert "color: red" in status and "restoration denied" in status
+    assert (tmp_path / "dataset.csv").read_bytes() == contents
+    backups = list(tmp_path.glob(".features-backup-*/previous"))
+    assert len(backups) == 1
+    assert str(backups[0]) in status
+    assert (backups[0] / "previous.pt").read_bytes() == b"previous extracted features"
+    assert not list(tmp_path.glob(".extraction-*"))
+
+
+def test_interrupt_after_dataset_publication_keeps_features_aligned(tmp_path, progress, monkeypatch):
+    _existing_extraction(tmp_path, ["CCO", "NOT_A_SMILES"])
+    original_replace = utils.os.replace
+
+    def interrupt_after_dataset_replace(source, destination):
+        result = original_replace(source, destination)
+        if str(destination) == str(tmp_path / "dataset.csv"):
+            raise KeyboardInterrupt("dataset was published")
+        return result
+
+    monkeypatch.setattr(utils.os, "replace", interrupt_after_dataset_replace)
+    with pytest.raises(KeyboardInterrupt, match="dataset was published"):
+        _extract("graphs", tmp_path, progress)
+
+    assert pd.read_csv(tmp_path / "dataset.csv")["SMILES"].tolist() == ["CCO"]
+    assert utils.read_graph_manifest(tmp_path / "features") == ["CCO"]
+    assert utils.list_graph_files(tmp_path / "features") == [0]
+    assert not list(tmp_path.glob(".extraction-*"))
+
+
+@pytest.mark.parametrize("kind", ["graphs", "3d", "fingerprints"])
+def test_extractors_reject_dataset_path_traversal(tmp_path, progress, kind):
+    contents = _existing_extraction(tmp_path, ["CCO"])
+
+    status = _extract(kind, tmp_path, progress, "../dataset.csv")
+
+    assert "color: red" in status and "dataset file name" in status
+    _assert_extraction_preserved(tmp_path, contents)
+
+
+def test_fingerprint_csv_quotes_smiles_with_molecule_names(tmp_path, progress):
+    """RDKit accepts a name after SMILES; commas in that name must be CSV-escaped."""
+    smiles = "CCO ethanol, sample"
+    pd.DataFrame({"SMILES": [smiles], "target": [1]}).to_csv(tmp_path / "dataset.csv", index=False)
+
+    status = _extract("fingerprints", tmp_path, progress)
+
+    assert "color: green" in status, status
+    df = pd.read_csv(tmp_path / "features" / "molecular_fingerprints.csv")
+    assert df.shape == (1, 65)
+    assert df["SMILES"].tolist() == [smiles]

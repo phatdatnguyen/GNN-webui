@@ -1,17 +1,18 @@
-"""Tests for the Gradio callbacks in binary_classification.py and regression.py.
+"""Tests for the Gradio callbacks in binary_classification_hybrid.py and regression_hybrid.py.
 
 These are the functions wired to buttons, so they return status HTML plus component
 updates rather than raising. The tests assert on that contract.
 """
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 import torch
 
-import binary_classification as bc
-import regression as rg
+import binary_classification_hybrid as bc
+import regression_hybrid as rg
 from conftest import FakeProgress, SMILES, create_model_args, is_error, is_ok
 
 
@@ -395,7 +396,7 @@ def test_regression_epoch_loss_is_a_true_rmse(regression_workdir):
 
 def test_evaluate_produces_one_row_per_test_molecule(trained_classifier):
     t = trained_classifier
-    status, eval_df, export_btn = bc.on_evaluate(
+    status, eval_df, export_btn, metrics_export_btn = bc.on_evaluate(
         t["model"], t["dataset"], t["test_dl"], "cpu", torch.float32,
         "Custom", "GCNConv", t["vt"], t["pca"])
 
@@ -404,13 +405,15 @@ def test_evaluate_produces_one_row_per_test_molecule(trained_classifier):
     assert list(eval_df.columns) == ["SMILES", "target", "target (Prediction)", "target (Probability)"]
     assert eval_df["target (Prediction)"].isin([0, 1]).all()
     assert eval_df["target (Probability)"].between(0, 1).all()
+    assert export_btn["interactive"] is True and metrics_export_btn["interactive"] is True
 
 
 def test_evaluate_reports_an_error_without_a_model(trained_classifier):
-    status, eval_df, export_btn = bc.on_evaluate(
+    status, eval_df, export_btn, metrics_export_btn = bc.on_evaluate(
         None, trained_classifier["dataset"], trained_classifier["test_dl"], "cpu",
         torch.float32, "Custom", "GCNConv", None, None)
     assert is_error(status) and eval_df is None
+    assert export_btn["interactive"] is False and metrics_export_btn["interactive"] is False
 
 
 def test_metrics_are_computed_for_a_normal_split():
@@ -422,10 +425,14 @@ def test_metrics_are_computed_for_a_normal_split():
     })
     metrics, cm_figure, roc_figure = bc.on_target_column_change(eval_df, "target")
 
-    assert list(metrics["Metric"]) == ["Accuracy", "Precision", "Recall", "Specificity",
-                                       "F1 score", "ROC-AUC score"]
+    assert list(metrics["Metric"]) == ["Accuracy", "Balanced accuracy", "Precision", "Recall", "Specificity",
+                                       "F1 score", "MCC", "ROC-AUC score", "AUPRC", "Average precision"]
     assert metrics.set_index("Metric").loc["Accuracy", "Value"] == pytest.approx(0.75)
     assert metrics.set_index("Metric").loc["Specificity", "Value"] == pytest.approx(1.0)
+    assert metrics.set_index("Metric").loc["Balanced accuracy", "Value"] == pytest.approx(0.75)
+    assert metrics.set_index("Metric").loc["MCC", "Value"] == pytest.approx(0.5774)
+    assert metrics.set_index("Metric").loc["AUPRC", "Value"] == pytest.approx(1.0)
+    assert metrics.set_index("Metric").loc["Average precision", "Value"] == pytest.approx(1.0)
     assert cm_figure is not None and roc_figure is not None
 
 
@@ -441,7 +448,9 @@ def test_metrics_survive_a_single_class_test_split():
     metrics, cm_figure, roc_figure = bc.on_target_column_change(eval_df, "target")
 
     assert metrics is not None
-    assert np.isnan(metrics.set_index("Metric").loc["ROC-AUC score", "Value"])
+    values = metrics.set_index("Metric")["Value"]
+    for metric in ["ROC-AUC score", "AUPRC", "Average precision", "Balanced accuracy", "MCC", "Specificity"]:
+        assert np.isnan(values[metric])
     assert cm_figure is not None and roc_figure is not None
 
 
@@ -479,11 +488,12 @@ def test_regression_metrics():
     assert scatter is not None
 
 
-def test_regression_r2_is_nan_when_every_target_is_identical():
+@pytest.mark.parametrize("value,count", [(2.0, 2), (0.1, 3), (0.1, 10)])
+def test_regression_r2_is_nan_when_every_target_is_identical(value, count):
     eval_df = pd.DataFrame({
-        "SMILES": ["CCO", "CCN"],
-        "value": [2.0, 2.0],
-        "value (Prediction)": [1.0, 3.0],
+        "SMILES": ["CCO"] * count,
+        "value": [value] * count,
+        "value (Prediction)": [value + 1] * count,
     })
     metrics, _ = rg.on_target_column_change(eval_df, "value")
     assert np.isnan(metrics.set_index("Metric").loc["R²", "Value"])
@@ -646,7 +656,7 @@ def test_exports_reject_unsafe_file_names(trained_classifier, name):
 
 def test_export_evaluation_writes_the_dataframe(trained_classifier):
     t = trained_classifier
-    _, eval_df, _ = bc.on_evaluate(t["model"], t["dataset"], t["test_dl"], "cpu",
+    _, eval_df, _, _ = bc.on_evaluate(t["model"], t["dataset"], t["test_dl"], "cpu",
                                    torch.float32, "Custom", "GCNConv", t["vt"], t["pca"])
     status, _ = bc.on_export_evaluation(t["workdir"], "evaluation", eval_df)
     assert is_ok(status)
@@ -654,6 +664,129 @@ def test_export_evaluation_writes_the_dataframe(trained_classifier):
     written = pd.read_csv(os.path.join(t["workdir"], "evaluation.csv"))
     assert list(written.columns) == list(eval_df.columns)
     assert len(written) == len(eval_df)
+
+
+def cached_export_rows(module):
+    if module is bc:
+        return pd.DataFrame({
+            "SMILES": ["CCO", "CCN", "CCC", "CCCl"],
+            "first": [0, 1, 0, 1], "first (Prediction)": [0, 1, 0, 1],
+            "first (Probability)": [0.1, 0.9, 0.2, 0.8],
+            "second": [0, 1, 0, 1], "second (Prediction)": [1, 1, 0, 0],
+            "second (Probability)": [0.8, 0.9, 0.1, 0.2],
+        })
+    return pd.DataFrame({
+        "SMILES": ["CCO", "CCN", "CCC", "CCCl"],
+        "first": [1, 2, 3, 4], "first (Prediction)": [1, 2, 3, 4],
+        "second": [10, 20, 30, 40], "second (Prediction)": [11, 18, 33, 36],
+    })
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+@pytest.mark.parametrize("name", ["test_metrics", "test_metrics.csv"])
+def test_metrics_export_uses_all_cached_targets_without_inference(module, name, tmp_path, monkeypatch):
+    rows = cached_export_rows(module)
+    dataset = SimpleNamespace(target_column_names=["first", "second"])
+
+    def unexpected_call(*args, **kwargs):
+        raise AssertionError("Exports must use cached rows without model inference or selected-target plots")
+
+    monkeypatch.setattr(module, "test", unexpected_call)
+    monkeypatch.setattr(module, "on_target_column_change", unexpected_call)
+    status, contents = module.on_export_metrics(str(tmp_path), name, rows, dataset)
+    assert is_ok(status), status
+    assert contents == ["test_metrics.csv"]
+    metrics = pd.read_csv(tmp_path / "test_metrics.csv")
+    assert list(metrics) == ["Target", "Metric", "Value"]
+    assert metrics["Target"].unique().tolist() == ["first", "second"]
+    values = metrics.set_index(["Target", "Metric"])["Value"]
+    if module is bc:
+        assert len(metrics) == 20
+        assert values["first", "Accuracy"] == 1
+        assert values["second", "Accuracy"] == 0.5
+        assert values["second", "ROC-AUC score"] == 0.75
+    else:
+        assert len(metrics) == 8
+        assert metrics["Metric"].tolist() == ["MAE", "MSE", "RMSE", "R²"] * 2
+        assert values["first", "MSE"] == 0
+        assert values["second", "MAE"] == 2.5
+        assert values["second", "MSE"] == 7.5
+        assert values["second", "RMSE"] == pytest.approx(np.sqrt(7.5))
+        assert values["second", "R²"] == pytest.approx(0.94)
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+@pytest.mark.parametrize("name", ["evaluation", "evaluation.csv"])
+def test_evaluation_export_preserves_every_cached_row_and_column(module, name, tmp_path):
+    rows = cached_export_rows(module)
+    status, contents = module.on_export_evaluation(str(tmp_path), name, rows)
+    assert is_ok(status), status
+    assert contents == ["evaluation.csv"]
+    written = pd.read_csv(tmp_path / "evaluation.csv")
+    pd.testing.assert_frame_equal(written, rows)
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+@pytest.mark.parametrize("kind", ["metrics", "evaluation"])
+@pytest.mark.parametrize("name", ["../escape", "/etc/passwd", "..", "", "<bad>"])
+def test_test_result_exports_reject_unsafe_names_and_preserve_directory_state(module, kind, name, tmp_path):
+    rows = cached_export_rows(module)
+    if kind == "metrics":
+        result = module.on_export_metrics(str(tmp_path), name, rows,
+                                          SimpleNamespace(target_column_names=["first", "second"]))
+    else:
+        result = module.on_export_evaluation(str(tmp_path), name, rows)
+    assert is_error(result[0])
+    if name == "<bad>":
+        assert "&lt;bad&gt;" in result[0] and "<bad>" not in result[0]
+    assert result[1] == {"__type__": "update"}
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+@pytest.mark.parametrize("rows", [None, pd.DataFrame()])
+def test_test_result_exports_require_evaluation_rows(module, rows, tmp_path):
+    dataset = SimpleNamespace(target_column_names=["first", "second"])
+    for result in [module.on_export_metrics(str(tmp_path), "metrics", rows, dataset),
+                   module.on_export_evaluation(str(tmp_path), "evaluation", rows)]:
+        assert is_error(result[0])
+        assert result[1] == {"__type__": "update"}
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+def test_test_result_exports_report_missing_working_directory(module, tmp_path):
+    rows = cached_export_rows(module)
+    directory = str(tmp_path / "missing")
+    dataset = SimpleNamespace(target_column_names=["first", "second"])
+    assert is_error(module.on_export_metrics(directory, "metrics", rows, dataset)[0])
+    assert is_error(module.on_export_evaluation(directory, "evaluation", rows)[0])
+    assert is_error(module.on_export_metrics(str(tmp_path), "metrics", rows, None)[0])
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+def test_evaluation_rejects_overlapping_target_and_prediction_column_names(module):
+    dataset = SimpleNamespace(target_column_names=["target", "target (Prediction)"])
+    scaler_arguments = [object()] if module is rg else []
+    result = module.on_evaluate(object(), dataset, object(), "cpu", torch.float32, *scaler_arguments,
+                                "Custom", "GCNConv", None, None)
+    assert is_error(result[0]) and "overlap generated evaluation columns" in result[0]
+    assert result[1] is None
+    assert result[2]["interactive"] is False and result[3]["interactive"] is False
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+def test_nonfinite_model_outputs_fail_evaluation_and_disable_both_exports(module, monkeypatch):
+    dataset = SimpleNamespace(target_column_names=["target"])
+    predicted = torch.tensor([[float("nan")], [0.0]]) if module is bc else np.array([[np.nan], [0.0]])
+    monkeypatch.setattr(module, "test", lambda *args: (torch.tensor([[0.0], [1.0]]), predicted, ["CCO", "CCN"]))
+    scaler_arguments = [object()] if module is rg else []
+    result = module.on_evaluate(torch.nn.Linear(1, 1), dataset, object(), "cpu", torch.float32, *scaler_arguments,
+                                "Custom", "GCNConv", None, None)
+    assert is_error(result[0])
+    assert "finite" in result[0]
+    assert result[1] is None
+    assert result[2]["interactive"] is False and result[3]["interactive"] is False
 
 
 def test_export_without_data_reports_an_error(classification_workdir):
@@ -750,5 +883,214 @@ def test_open_working_directory_creates_the_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(bc, "DATA_DIR", str(data_dir))
     result = bc.on_open_working_directory("my_run")
 
-    assert result[-2] == os.path.join(str(data_dir), "my_run")
-    assert (data_dir / "my_run").is_dir()
+    assert result[-2] == os.path.join(str(data_dir), "Classification", "my_run")
+    assert (data_dir / "Classification" / "my_run").is_dir()
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+@pytest.mark.parametrize("mode,graph_dir,fp_dir", [
+    ("Graphs", "graphs", None), ("Molecular fingerprints", None, "fps"),
+])
+def test_single_input_mode_ignores_unselected_directory(classification_workdir, module, mode, graph_dir, fp_dir):
+    result = module.on_process_data(
+        classification_workdir, "dataset.csv", mode, graph_dir, fp_dir, torch.float32,
+        False, 0.0, 4, 0.25, 0.25, 4, False, 0)
+    assert is_ok(result[0]), result[0]
+    prediction = module.on_process_prediction_data(
+        classification_workdir, "dataset.csv", result[3], graph_dir, fp_dir, torch.float32, 4)
+    assert is_ok(prediction[0]), prediction[0]
+    assert len(prediction[1]) == len(SMILES)
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+def test_create_model_without_processed_data_reports_error(module):
+    result = module.on_create_model(*create_model_args(None, "GCN"))
+    assert is_error(result[0])
+    assert "process the data" in result[0]
+    assert result[7]["interactive"] is False
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+@pytest.mark.parametrize("target", [float("nan"), float("inf"), -float("inf")])
+def test_processing_rejects_nonfinite_targets(classification_workdir, module, target):
+    path = os.path.join(classification_workdir, "dataset.csv")
+    df = pd.read_csv(path)
+    df["target"] = df["target"].astype(float)
+    df.loc[0, "target"] = target
+    df.to_csv(path, index=False)
+    result = module.on_process_data(
+        classification_workdir, "dataset.csv", "Both", "graphs", "fps", torch.float32,
+        False, 0.0, 4, 0.25, 0.25, 4, False, 0)
+    assert is_error(result[0])
+    assert result[3] is None
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+@pytest.mark.parametrize("actual_tab,selected_tab", [("GAT", "GCN"), ("GCN", "GAT")])
+def test_training_and_inference_follow_created_model_after_tab_change(classification_workdir, module, actual_tab, selected_tab):
+    processed = module.on_process_data(
+        classification_workdir, "dataset.csv", "Both", "graphs", "fps", torch.float32,
+        False, 0.0, 4, 0.25, 0.25, 4, False, 0)
+    dataset, train_dl, val_dl, test_dl, vt, pca = processed[3:9]
+    scaler_args = [processed[9]] if module is rg else []
+    model = module.on_create_model(*create_model_args(dataset, actual_tab))[-4]
+    expected = module.predict(model, dataset, test_dl, "cpu", torch.float32, *scaler_args,
+                              actual_tab, "GCNConv", vt, pca)[1]
+    actual = module.predict(model, dataset, test_dl, "cpu", torch.float32, *scaler_args,
+                            selected_tab, "GCNConv", vt, pca)[1]
+    np.testing.assert_allclose(actual, expected)
+    evaluation = module.on_evaluate(model, dataset, test_dl, "cpu", torch.float32, *scaler_args,
+                                    selected_tab, "GCNConv", vt, pca)
+    assert is_ok(evaluation[0]), evaluation[0]
+    _, optimizer, scheduler, _ = module.on_create_optimizer(model, "Adam", 0.01, 0.99)
+    trained = module.on_train(model, dataset, train_dl, val_dl, "cpu", torch.float32,
+                              *scaler_args, optimizer, scheduler, 1, 0, [], [],
+                              selected_tab, "GCNConv", vt, pca, FakeProgress())
+    assert is_ok(trained[0]), trained[0]
+    assert trained[3] == 1
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+def test_bfloat16_fingerprints_with_pca_train_evaluate_and_predict(classification_workdir, module):
+    processed = module.on_process_data(
+        classification_workdir, "dataset.csv", "Molecular fingerprints", None, "fps", torch.bfloat16,
+        True, 0.0, 4, 0.25, 0.25, 4, False, 0)
+    assert is_ok(processed[0]), processed[0]
+    dataset, train_dl, val_dl, test_dl, vt, pca = processed[3:9]
+    scaler_args = [processed[9]] if module is rg else []
+    args = create_model_args(dataset, "GCN", vt, pca)
+    args[3] = torch.bfloat16
+    created = module.on_create_model(*args)
+    assert is_ok(created[0]), created[0]
+    model = created[-4]
+    _, optimizer, scheduler, _ = module.on_create_optimizer(model, "SGD", 0.01, 0.99)
+    trained = module.on_train(model, dataset, train_dl, val_dl, "cpu", torch.bfloat16,
+                              *scaler_args, optimizer, scheduler, 1, 0, [], [],
+                              "GCN", "GCNConv", vt, pca, FakeProgress())
+    assert is_ok(trained[0]), trained[0]
+    assert np.isfinite(trained[4]).all()
+    evaluation = module.on_evaluate(model, dataset, test_dl, "cpu", torch.bfloat16, *scaler_args,
+                                    "GCN", "GCNConv", vt, pca)
+    assert is_ok(evaluation[0]), evaluation[0]
+    prediction = module.on_predict(model, dataset, dataset, test_dl, "cpu", torch.bfloat16,
+                                    *scaler_args, "GCN", "GCNConv", vt, pca)
+    assert is_ok(prediction[0]), prediction[0]
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+def test_incompatible_checkpoint_preserves_all_model_weights(classification_workdir, module):
+    dataset = process_classification(classification_workdir)[3]
+    model = module.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    before = {k: v.clone() for k, v in model.state_dict().items()}
+    changed = {k: v + 10 for k, v in before.items()}
+    # Earlier tensors fit, but the final tensor fails: PyTorch loads those earlier
+    # tensors before raising unless the entire checkpoint is validated first.
+    last_key = list(changed)[-1]
+    changed[last_key] = torch.zeros(17)
+    torch.save({"state_dict": changed, "model_class": type(model).__name__},
+               os.path.join(classification_workdir, "bad.ckpt"))
+    scaler_args = [None] if module is rg else []
+    loaded = module.on_load_checkpoint(classification_workdir, "bad.ckpt", model,
+                                       [0.1], [0.2], 3, None, None, *scaler_args)
+    assert is_error(loaded[0])
+    assert loaded[2:5] == ([0.1], [0.2], 3)
+    for key, tensor in model.state_dict().items():
+        assert torch.equal(tensor, before[key]), key
+
+
+def test_regression_reports_an_empty_test_split(regression_workdir):
+    processed = rg.on_process_data(
+        regression_workdir, "dataset.csv", "Graphs", "graphs", None, torch.float32,
+        False, 0.0, 4, 0.0, 0.25, 4, False, 0)
+    dataset, test_dl, scaler = processed[3], processed[6], processed[9]
+    model = rg.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    result = rg.on_evaluate(model, dataset, test_dl, "cpu", torch.float32, scaler,
+                            "GCN", "GCNConv", None, None)
+    assert is_error(result[0])
+    assert "test split is empty" in result[0]
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+def test_scheduler_failure_preserves_completed_epoch_count(classification_workdir, module):
+    processed = module.on_process_data(
+        classification_workdir, "dataset.csv", "Graphs", "graphs", None, torch.float32,
+        False, 0.0, 4, 0.25, 0.25, 4, False, 0)
+    dataset, train_dl, val_dl = processed[3:6]
+    scaler_args = [processed[9]] if module is rg else []
+    model = module.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    _, optimizer, _, _ = module.on_create_optimizer(model, "SGD", 0.01, 0.99)
+
+    class BrokenScheduler:
+        def step(self):
+            raise RuntimeError("scheduler failed")
+
+    trained = module.on_train(model, dataset, train_dl, val_dl, "cpu", torch.float32,
+                              *scaler_args, optimizer, BrokenScheduler(), 2, 0, [], [],
+                              "GCN", "GCNConv", None, None, FakeProgress())
+    assert is_error(trained[0])
+    assert trained[3] == len(trained[4]) == len(trained[5]) == 1
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+def test_nonfinite_loss_is_rejected_before_optimizer_updates(classification_workdir, module, monkeypatch):
+    processed = module.on_process_data(
+        classification_workdir, "dataset.csv", "Graphs", "graphs", None, torch.float32,
+        False, 0.0, 4, 0.25, 0.25, 4, False, 0)
+    dataset, train_dl, val_dl = processed[3:6]
+    scaler_args = [processed[9]] if module is rg else []
+    model = module.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    before = [p.detach().clone() for p in model.parameters()]
+    _, optimizer, scheduler, _ = module.on_create_optimizer(model, "SGD", 0.01, 0.99)
+    monkeypatch.setattr(module, "loss_fn", lambda output, target: output.sum() * float("nan"))
+    trained = module.on_train(model, dataset, train_dl, val_dl, "cpu", torch.float32,
+                              *scaler_args, optimizer, scheduler, 1, 0, [], [],
+                              "GCN", "GCNConv", None, None, FakeProgress())
+    assert is_error(trained[0])
+    assert "not finite" in trained[0]
+    assert trained[3] == 0
+    assert all(torch.equal(p, q) for p, q in zip(model.parameters(), before))
+
+
+@pytest.mark.parametrize("datatype", [torch.float16, torch.bfloat16])
+def test_regression_scales_large_targets_before_reducing_precision(regression_workdir, datatype):
+    path = os.path.join(regression_workdir, "dataset.csv")
+    df = pd.read_csv(path)
+    df["value"] = 100000.0 + np.arange(len(df)) * 0.125
+    df.to_csv(path, index=False)
+    processed = rg.on_process_data(
+        regression_workdir, "dataset.csv", "Molecular fingerprints", None, "fps", datatype,
+        False, 0.0, 4, 0.25, 0.25, 4, False, 0)
+    assert is_ok(processed[0]), processed[0]
+    dataset, val_dl, scaler = processed[3], processed[5], processed[9]
+    args = create_model_args(dataset, "GCN")
+    args[3] = datatype
+    model = rg.on_create_model(*args)[-4]
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.zero_()
+    actual_rmse = rg.validation(model, dataset, val_dl, "cpu", datatype, scaler,
+                                "GCN", "GCNConv", None, None)
+    expected_targets = scaler.transform(df[["value"]].iloc[val_dl.dataset.indices])
+    assert actual_rmse == pytest.approx(np.sqrt(np.mean(expected_targets ** 2)), rel=0.01)
+    evaluated = rg.on_evaluate(model, dataset, val_dl, "cpu", datatype, scaler,
+                               "GCN", "GCNConv", None, None)
+    assert is_ok(evaluated[0]), evaluated[0]
+    assert evaluated[1]["value"].tolist() == df["value"].iloc[val_dl.dataset.indices].tolist()
+
+
+def test_regression_refuses_broadcasting_mismatched_target_width(regression_workdir):
+    processed = process_regression(regression_workdir, "Molecular fingerprints")
+    dataset, train_dl, val_dl, scaler = processed[3], processed[4], processed[5], processed[9]
+    model = rg.on_create_model(*create_model_args(dataset, "GCN"))[-4]
+    # Reprocessing can change the target width while an old model is still present.
+    dataset.df["second_value"] = dataset.df["value"]
+    scaler.fit(dataset.df[["value", "second_value"]])
+    _, optimizer, scheduler, _ = rg.on_create_optimizer(model, "SGD", 0.01, 0.99)
+    before = [p.detach().clone() for p in model.parameters()]
+    result = rg.on_train(model, dataset, train_dl, val_dl, "cpu", torch.float32,
+                         scaler, optimizer, scheduler, 1, 0, [], [],
+                         "GCN", "GCNConv", None, None, FakeProgress())
+    assert is_error(result[0])
+    assert "output shape" in result[0]
+    assert result[3] == 0
+    assert all(torch.equal(p, q) for p, q in zip(model.parameters(), before))

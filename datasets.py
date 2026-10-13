@@ -75,12 +75,13 @@ def _check_fingerprints_match_dataset(fingerprint_df, df, molecular_fingerprint_
         )
 
 class MolecularDataset(Dataset):
-    def __init__(self, dataset_file_path, load_data, graph_directory_path, molecular_fingerprint_directory_path, datatype):
+    def __init__(self, dataset_file_path, load_data, graph_directory_path, molecular_fingerprint_directory_path, datatype, *, target_datatype=None):
         self.dataset_file_path = dataset_file_path
         self.df = pd.read_csv(dataset_file_path)
         self.target_column_names = self.df.columns.tolist()[1:]
         self.load_data = load_data
         self.datatype = datatype
+        self.target_datatype = target_datatype if target_datatype is not None else datatype
         self.graph_directory_path = graph_directory_path
         self.fingerprint_df = None
         self._length = len(self.df)
@@ -113,7 +114,7 @@ class MolecularDataset(Dataset):
         if self.df.shape[1] == 1: # Only SMILES column, no target columns
             data.y = None
         else:
-            data.y = torch.tensor(self.df.drop(columns=['SMILES']).iloc[idx].values, dtype=self.datatype).unsqueeze(0)
+            data.y = torch.tensor(self.df.drop(columns=['SMILES']).iloc[idx].values, dtype=self.target_datatype).unsqueeze(0)
 
         return data
 
@@ -145,11 +146,15 @@ class MolecularDataset(Dataset):
         return self.df.shape[1] - 1
 
 class MolecularDataset3D(Dataset):
-    def __init__(self, dataset_file_path, graph_directory_path, datatype):
+    def __init__(self, dataset_file_path, graph_directory_path, datatype, *, target_datatype=None):
         self.dataset_file_path = dataset_file_path
         self.df = pd.read_csv(dataset_file_path)
+        if self.df.shape[1] > 2:
+            raise ValueError("3D models accept only one target column. Please select a dataset "
+                             "with SMILES and one target column, or SMILES only for prediction.")
         self.target_column_name = self.df.columns[1] if self.df.shape[1] > 1 else None
         self.datatype = datatype
+        self.target_datatype = target_datatype if target_datatype is not None else datatype
 
         # Validate that the graph data are present and aligned with the dataset
         self.graph_directory_path = graph_directory_path
@@ -168,7 +173,7 @@ class MolecularDataset3D(Dataset):
         if self.df.shape[1] == 1: # Only SMILES column, no target columns
             data.y = None
         else:
-            data.y = torch.tensor(self.df.drop(columns=['SMILES']).iloc[idx].values, dtype=self.datatype).unsqueeze(0)
+            data.y = torch.tensor(self.df.drop(columns=['SMILES']).iloc[idx].values, dtype=self.target_datatype).unsqueeze(0)
 
         return data
 

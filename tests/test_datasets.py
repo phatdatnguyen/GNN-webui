@@ -87,6 +87,32 @@ def test_getitem_respects_the_datatype(classification_workdir):
     assert item.y.dtype == torch.float64
 
 
+@pytest.mark.parametrize("datatype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("is_3d", [False, True])
+def test_regression_targets_retain_precision_before_scaling(tmp_path, datatype, is_3d):
+    """Raw target values can exceed float16 or lose all variation in bfloat16 before scaling."""
+    from torch_geometric.data import Data
+    import utils
+
+    targets = [100000.125, 100000.25]
+    pd.DataFrame({"SMILES": ["CCO", "CCN"], "target": targets}).to_csv(tmp_path / "dataset.csv", index=False)
+    graph_dir = tmp_path / "graphs"
+    graph_dir.mkdir()
+    for i, smiles in enumerate(["CCO", "CCN"]):
+        torch.save(Data(smiles=smiles), graph_dir / f"{i}.pt")
+    utils.write_graph_manifest(graph_dir, ["CCO", "CCN"])
+    if is_3d:
+        dataset = MolecularDataset3D(str(tmp_path / "dataset.csv"), str(graph_dir), datatype,
+                                     target_datatype=torch.float64)
+    else:
+        dataset = MolecularDataset(str(tmp_path / "dataset.csv"), "Graphs", str(graph_dir), "",
+                                   datatype, target_datatype=torch.float64)
+
+    batch = next(iter(DataLoader(dataset, batch_size=2)))
+    assert batch.y.dtype == torch.float64
+    assert batch.y.flatten().tolist() == targets
+
+
 def test_targets_are_none_when_the_dataset_has_no_target_column(classification_workdir):
     """Prediction datasets carry SMILES only."""
     path = os.path.join(classification_workdir, "dataset.csv")
@@ -238,6 +264,13 @@ def test_batch_size_one_still_produces_a_batch_dimension(classification_workdir)
 
 
 # ---------------------------------------------------------------------------- 3D dataset
+
+def test_3d_dataset_rejects_multiple_target_columns(tmp_path):
+    path = tmp_path / "dataset.csv"
+    pd.DataFrame({"SMILES": ["CCO"], "a": [1], "b": [0]}).to_csv(path, index=False)
+
+    with pytest.raises(ValueError, match="only one target"):
+        MolecularDataset3D(str(path), str(tmp_path / "graphs"), torch.float32)
 
 @pytest.mark.slow
 def test_3d_dataset_basics(workdir_3d):

@@ -1,8 +1,10 @@
 import gradio as gr
-from binary_classification import binary_classification_tab_content
+from binary_classification_hybrid import binary_classification_hybrid_tab_content
 from binary_classification_3d import binary_classification_3d_tab_content
-from regression import regression_tab_content
+from binary_classification_classical import binary_classification_classical_tab_content
+from regression_hybrid import regression_hybrid_tab_content
 from regression_3d import regression_3d_tab_content
+from regression_classical import regression_classical_tab_content
 from pathlib import Path
 from fastapi import FastAPI
 from utils import BASE_DIR, DATA_DIR
@@ -31,10 +33,12 @@ def reserve_available_port(start_port=7860, max_attempts=100):
 
 with gr.Blocks() as blocks:
     with gr.Tabs() as tabs:
-        binary_classification_tab_content()
+        binary_classification_hybrid_tab_content()
         binary_classification_3d_tab_content()
-        regression_tab_content()
+        binary_classification_classical_tab_content()
+        regression_hybrid_tab_content()
         regression_3d_tab_content()
+        regression_classical_tab_content()
 
 # mount Gradio app to FastAPI app
 app = gr.mount_gradio_app(app, blocks, css_paths=Path(BASE_DIR) / 'styles.css', path="/")

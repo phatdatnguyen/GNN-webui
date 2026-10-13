@@ -1,5 +1,5 @@
-import math
 import os
+from html import escape
 import time
 import pandas as pd
 import gradio as gr
@@ -8,23 +8,28 @@ from torch_geometric.nn import summary
 from torch_geometric.loader import DataLoader
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, auc, roc_curve
+from evaluation_metrics import classification_metrics, metrics_from_predictions
 from matplotlib import pyplot as plt
 from datasets import MolecularDataset
+from ui_utils import bind_data_processing, bind_result_invalidation
 from models import *
 from utils import *
 
 def get_working_directories():
-    os.makedirs(DATA_DIR, exist_ok=True)
-    return sorted(d for d in os.listdir(DATA_DIR) if os.path.isdir(os.path.join(DATA_DIR, d)))
+    workflow_directory = os.path.join(DATA_DIR, "Classification")
+    os.makedirs(workflow_directory, exist_ok=True)
+    return sorted(d for d in os.listdir(workflow_directory) if os.path.isdir(os.path.join(workflow_directory, d)))
 
 def get_working_directory_contents(working_directory_path):
     # os.listdir(None) silently lists the current working directory, which would show the
     # repo root in the file browser after a failed "open working directory".
     if not working_directory_path:
         return []
-    return [f for f in os.listdir(working_directory_path)]
+    try:
+        return os.listdir(working_directory_path)
+    except OSError:
+        return []
 
 def on_open_working_directory(working_directory_name):
     try:
@@ -33,7 +38,7 @@ def on_open_working_directory(working_directory_name):
         gr.Warning(str(exc))
         return None, gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), None, None
 
-    working_directory_path = os.path.join(DATA_DIR, working_directory_name)
+    working_directory_path = os.path.join(DATA_DIR, "Classification", working_directory_name)
     os.makedirs(working_directory_path, exist_ok=True)
     files = get_working_directory_contents(working_directory_path)
     
@@ -161,13 +166,15 @@ def on_extract_molecule_fingerprints(working_directory_path, dataset_file_name, 
 def on_dimensionality_reduction_change(dimensionality_reduction_enabled):
     return gr.update(visible=dimensionality_reduction_enabled), gr.update(visible=dimensionality_reduction_enabled)
 
-def on_process_data(working_directory_path, dataset_file_name, load_data, graph_directory, molecular_fingerprint_directory, datatype, dimensionality_reduction, variance_threshold, pca_num_components, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed):
+def on_process_data(working_directory_path, dataset_file_name, load_data, graph_directory, molecular_fingerprint_directory, datatype, dimensionality_reduction, variance_threshold, pca_num_components, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed, split_method="Random"):
     try:
         # Validate inputs
         if load_data in ('Graphs', 'Both') and (graph_directory is None or graph_directory.strip() == ""):
             raise ValueError("Please select a graph directory.")
         if load_data in ('Molecular fingerprints', 'Both') and (molecular_fingerprint_directory is None or molecular_fingerprint_directory.strip() == ""):
             raise ValueError("Please select a molecular fingerprint directory.")
+
+        dataset_file_name = sanitize_path_component(dataset_file_name, "dataset file name")
 
         # Validate output columns
         dataset_file_path = os.path.join(working_directory_path, dataset_file_name)
@@ -176,24 +183,29 @@ def on_process_data(working_directory_path, dataset_file_name, load_data, graph_
         if len(target_columns_list) == 0:
             raise ValueError("No target columns found in the dataset. Please ensure your dataset has at least one target column in addition to the SMILES column.")
         for col in target_columns_list:
-            if not pd.api.types.is_numeric_dtype(df[col]) :
-                raise ValueError(f"Target column '{col}' is not numeric. Please ensure all target columns are numeric.")
+            if df[col].isna().any():
+                raise ValueError(f"Target column '{col}' contains missing values. Please provide a label for every molecule.")
+            unique_values = df[col].unique()
+            num_unique = len(unique_values)
+            
+            # Check if there are exactly 2 unique values (0 and 1)
+            is_binary = (num_unique == 2 and set(unique_values) == {0, 1})
+            if not is_binary:
+                raise ValueError(f"Target column '{col}' is not binary. Please ensure all target columns contain only two unique values, 0 and 1.")
 
         # Set up dataset and dataloaders
-        graph_directory_path = os.path.join(working_directory_path, graph_directory)
-        molecular_fingerprint_directory_path = os.path.join(working_directory_path, molecular_fingerprint_directory)
+        graph_directory_path = (os.path.join(working_directory_path, sanitize_path_component(graph_directory, "graph directory"))
+                                if load_data in ('Graphs', 'Both') else None)
+        molecular_fingerprint_directory_path = (os.path.join(working_directory_path, sanitize_path_component(molecular_fingerprint_directory, "molecular fingerprint directory"))
+                                                if load_data in ('Molecular fingerprints', 'Both') else None)
 
         dataset = MolecularDataset(dataset_file_path, load_data, graph_directory_path, molecular_fingerprint_directory_path, datatype)
         
         total_len = len(dataset)
-        test_size = int(total_len * test_ratio)
-        val_size = int(total_len * val_ratio)
-        train_size = total_len - test_size - val_size
-        if train_size <= 0 or val_size < 0 or test_size < 0:
-            raise ValueError("Invalid split sizes. Please adjust test/val sizes.")
-        
-        train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=torch.Generator().manual_seed(random_seed))
-        
+        train_dataset, val_dataset, test_dataset = split_molecular_dataset(
+            dataset, test_ratio, val_ratio, random_seed, split_method)
+
+
         # Re-shuffle the training set each epoch. The generator is seeded from the random seed
         # so a shuffled run is still reproducible; turn the checkbox off for a fixed batch order.
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=bool(shuffle_training_data),
@@ -215,18 +227,18 @@ def on_process_data(working_directory_path, dataset_file_name, load_data, graph_
             variance_threshold = None
             pca = None
 
-        # Set up output scaler (fit on training split only to avoid leakage)
-        output_scaler = MinMaxScaler(feature_range=(0, 1))
-        train_targets = dataset.df.drop(columns=['SMILES']).iloc[train_dataset.indices].to_numpy()
-        output_scaler.fit(train_targets)
-
         target_column_names = dataset.target_column_names
 
-        status = f"Data processed: {total_len} molecules."
-        return f"<span style='color: green;'>{status}</span>", gr.update(interactive=True), gr.update(choices=target_column_names, value=target_column_names[0]), dataset, train_dataloader, val_dataloader, test_dataloader, variance_threshold, pca, output_scaler
+        status = (f"Data processed: {total_len} molecules. {split_method} split: "
+                  f"{len(train_dataset)} training, {len(val_dataset)} validation, "
+                  f"{len(test_dataset)} test.")
+        if split_method == "Scaffold":
+            status += " Scaffold groups are kept together, so split sizes may differ from the requested ratios."
+        status += " Create a model for this split before training or evaluation."
+        return f"<span style='color: green;'>{status}</span>", gr.update(interactive=True), gr.update(choices=target_column_names, value=target_column_names[0]), dataset, train_dataloader, val_dataloader, test_dataloader, variance_threshold, pca
     except Exception as exc:
         status = f"Error processing data: {exc}"
-        return f"<span style='color: red;'>{status}</span>", gr.update(interactive=False), gr.update(choices=[], value=None), None, None, None, None, None, None, None
+        return f"<span style='color: red;'>{status}</span>", gr.update(interactive=False), gr.update(choices=[], value=None), None, None, None, None, None, None
 
 def on_gnn_model_tab_selected(evt: gr.SelectData):
     return evt.value
@@ -242,43 +254,45 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
                     mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                     predictor_n_hiddens, predictor_n_layers):
     
-    # Initialize model parameters based on dataset and user selections
-    if dataset.load_data == 'Graphs':
-        gcn_n_inputs = dataset.num_node_features
-        edge_dim = dataset.num_edge_features
-        mlp_n_inputs = 0
-        mlp_n_outputs = 0
-    elif dataset.load_data == 'Molecular fingerprints':
-        gcn_n_inputs = 0
-        edge_dim = 0
-        gcn_n_outputs = 0
-        graph_sage_n_outputs = 0
-        gin_n_outputs = 0
-        gat_n_outputs = 0
-        edgecnn_n_outputs = 0
-        attentivefp_n_outputs = 0
-        customgcn_n_outputs = 0
-        mlp_n_inputs = dataset.num_fingerprint_bits
-    else: # Both
-        gcn_n_inputs = dataset.num_node_features
-        edge_dim = dataset.num_edge_features
-        mlp_n_inputs = dataset.num_fingerprint_bits
-    n_outputs = dataset.num_outputs
-
-    if variance_threshold is not None and pca is not None:
-        mlp_n_inputs = pca.n_components_
-
-    # Set random seed for reproducibility
-    torch.manual_seed(random_seed)
-    if device == 'cuda':
-        torch.cuda.manual_seed(random_seed)
-
     model = None
     train_losses = []
     val_losses = []
     trained_epochs = 0
 
     try:
+        if dataset is None:
+            raise ValueError("Please process the data first.")
+        # Initialize model parameters based on dataset and user selections
+        if dataset.load_data == 'Graphs':
+            gcn_n_inputs = dataset.num_node_features
+            edge_dim = dataset.num_edge_features
+            mlp_n_inputs = 0
+            mlp_n_outputs = 0
+        elif dataset.load_data == 'Molecular fingerprints':
+            gcn_n_inputs = 0
+            edge_dim = 0
+            gcn_n_outputs = 0
+            graph_sage_n_outputs = 0
+            gin_n_outputs = 0
+            gat_n_outputs = 0
+            edgecnn_n_outputs = 0
+            attentivefp_n_outputs = 0
+            customgcn_n_outputs = 0
+            mlp_n_inputs = dataset.num_fingerprint_bits
+        else: # Both
+            gcn_n_inputs = dataset.num_node_features
+            edge_dim = dataset.num_edge_features
+            mlp_n_inputs = dataset.num_fingerprint_bits
+        n_outputs = dataset.num_outputs
+
+        if variance_threshold is not None and pca is not None:
+            mlp_n_inputs = pca.n_components_
+
+        # Set random seed for reproducibility
+        torch.manual_seed(random_seed)
+        if device == 'cuda':
+            torch.cuda.manual_seed(random_seed)
+
         # Create the model based on the selected GNN architecture
         if dataset.load_data == 'Molecular fingerprints':
             model = MLPModel(mlp_n_inputs, mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
@@ -417,20 +431,20 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
             edge_attr = data.edge_attr.to(device=device, dtype=datatype)
             fingerprint = data.fp
         
-        batch_index = torch.tensor([0], device=device, dtype=torch.int32)
+        batch_index = torch.zeros(x.size(0), device=device, dtype=torch.long) if x is not None else None
         
         if fingerprint is not None:
             if variance_threshold is not None and pca is not None:
-                fingerprint_variance_thresholded = variance_threshold.transform(fingerprint.reshape(1, -1))
+                fingerprint_variance_thresholded = variance_threshold.transform(fingerprint.reshape(1, -1).double().numpy())
                 fingerprint_pca = pca.transform(fingerprint_variance_thresholded)
                 fingerprint_tensor = torch.tensor(fingerprint_pca).to(device=device, dtype=datatype)
             else:
                 fingerprint_tensor = torch.tensor(fingerprint.reshape(1, -1)).to(device=device, dtype=datatype)
         else:
             fingerprint_tensor = None
-        
+
         # Model summary
-        need_edge_attr = (gnn_model_tab in ["GAT", "AttentiveFP"]) or (gnn_model_tab == "Custom" and customgcn_convolutional_layer_name in ["PDNConv", "GENConv", "ResGatedGraphConv", "GATConv", "GATv2Conv", "TransformerConv", "GeneralConv"])
+        need_edge_attr = model_requires_edge_attr(model)
         if dataset.load_data == 'Molecular fingerprints':
             model_summary = summary(model, fingerprint_tensor)
         elif need_edge_attr:
@@ -450,21 +464,19 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
             gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), \
             model, train_losses, val_losses, trained_epochs
 
-def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_epochs, variance_threshold, pca, output_scaler):
+def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_epochs, variance_threshold, pca):
     try:
         if model is None:
             raise ValueError("Please create a model first.")
         checkpoint_name = sanitize_path_component(checkpoint_name, "checkpoint name")
-        # The fitted transformers are part of the model's contract. In particular the output scaler
-        # denormalises every prediction, so a checkpoint reloaded without it silently returns
-        # predictions on the wrong scale.
+        # The fitted transformers are part of the model's contract: reloading the weights without
+        # them silently feeds the model differently-preprocessed inputs.
         checkpoint = {
             'model_class': type(model).__name__,
             'state_dict': model.state_dict(),
             'trained_epochs': trained_epochs,
             'variance_threshold': variance_threshold,
-            'pca': pca,
-            'output_scaler': output_scaler
+            'pca': pca
         }
         checkpoint_path = os.path.join(working_directory_path, f"{checkpoint_name}_{trained_epochs}.ckpt")
         # The filename is derived from the epoch count, so re-saving replaces a previous file.
@@ -478,28 +490,23 @@ def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_e
         status = f"Error saving checkpoint: {exc}"
         return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
-def on_load_checkpoint(working_directory_path, checkpoint_file_name, model, train_losses, val_losses, trained_epochs, variance_threshold, pca, output_scaler):
+def on_load_checkpoint(working_directory_path, checkpoint_file_name, model, train_losses, val_losses, trained_epochs, variance_threshold, pca):
     try:
         if model is None:
             raise ValueError("Please create a model first, so the checkpoint has an architecture to load into.")
+        checkpoint_file_name = sanitize_path_component(checkpoint_file_name, "checkpoint file name")
         checkpoint_file_path = os.path.join(working_directory_path, checkpoint_file_name)
-        checkpoint = torch.load(checkpoint_file_path, weights_only=False)
-        saved_class = checkpoint.get('model_class')
-        if saved_class is not None and saved_class != type(model).__name__:
-            raise ValueError(f"This checkpoint was saved from a {saved_class} but the current model is a "
-                             f"{type(model).__name__}. Re-create the model with the original architecture first.")
-        model.load_state_dict(checkpoint['state_dict'])
+        checkpoint = load_model_checkpoint(model, checkpoint_file_path)
 
         status = f"Checkpoint loaded: {checkpoint_file_name}."
         return f"<span style='color: green;'>{status}</span>", model, [], [], checkpoint.get('trained_epochs', 0), \
-            checkpoint.get('variance_threshold', variance_threshold), checkpoint.get('pca', pca), \
-            checkpoint.get('output_scaler', output_scaler)
+            checkpoint.get('variance_threshold', variance_threshold), checkpoint.get('pca', pca)
     except Exception as exc:
         status = f"Error loading checkpoint: {exc}"
         # Leave the existing training state untouched - returning None here breaks the next Train click.
-        return f"<span style='color: red;'>{status}</span>", model, train_losses, val_losses, trained_epochs, variance_threshold, pca, output_scaler
+        return f"<span style='color: red;'>{status}</span>", model, train_losses, val_losses, trained_epochs, variance_threshold, pca
 
-loss_fn = torch.nn.MSELoss()
+loss_fn = torch.nn.BCEWithLogitsLoss()
 def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider):
     try:
         if model is None:
@@ -523,13 +530,11 @@ def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learnin
         return f"<span style='color: red;'>{status}</span>", None, None, gr.update(interactive=False)
 
 # Define the train function
-def train(model, dataset, dataloader, device, datatype, output_scaler, optimizer, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
+def train(model, dataset, dataloader, device, datatype, optimizer, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.train()
     total_loss = 0.0
     num_samples = 0
-    need_edge_attr = (gnn_model_tab in ["GAT", "AttentiveFP"]) or (
-        gnn_model_tab == "Custom" and customgcn_convolutional_layer_name in [
-            "PDNConv", "GENConv", "ResGatedGraphConv", "GATConv", "GATv2Conv", "TransformerConv", "GeneralConv"])
+    need_edge_attr = model_requires_edge_attr(model)
     
     for batch in dataloader:
         # Get input data
@@ -546,16 +551,16 @@ def train(model, dataset, dataloader, device, datatype, output_scaler, optimizer
         if dataset.load_data == 'Molecular fingerprints' or dataset.load_data == 'Both':
             fingerprints = batch.fp
             if variance_threshold is not None and pca is not None:
-                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints)
+                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints.double().numpy())
                 fingerprints_pca = pca.transform(fingerprints_variance_thresholded)
                 fingerprints_tensor = torch.tensor(fingerprints_pca).to(device=device, dtype=datatype)
             else:
                 fingerprints_tensor = fingerprints.to(device=device, dtype=datatype)
         else:
             fingerprints_tensor = None
-        
-        # Get target values
-        y_scaled = torch.tensor(output_scaler.transform(batch.y), device=device, dtype=datatype)
+
+        # Get target labels
+        y = batch.y.to(device=device, dtype=datatype)
         
         # Forward pass
         optimizer.zero_grad()
@@ -567,25 +572,24 @@ def train(model, dataset, dataloader, device, datatype, output_scaler, optimizer
             output = model(x, edge_index, batch_index, fingerprints_tensor)
 
         # Compute loss and backpropagate
-        loss = loss_fn(output, y_scaled)
+        loss = loss_fn(output, y)
+        if not torch.isfinite(loss):
+            raise ValueError("Training loss is not finite. Try a lower learning rate or float32 data type.")
         loss.backward()
         optimizer.step()
-        # Accumulate squared error and take the root once, so this is the true RMSE over the
-        # epoch rather than a mean of per-batch RMSEs (which depends on the batch size).
-        total_loss += loss.item() * y_scaled.shape[0]
-        num_samples += y_scaled.shape[0]
+        # Weight by batch size so the epoch loss does not depend on how the final batch is sized.
+        total_loss += loss.item() * y.shape[0]
+        num_samples += y.shape[0]
 
-    return math.sqrt(total_loss / num_samples) if num_samples > 0 else 0.0
+    return total_loss / num_samples if num_samples > 0 else 0.0
 
 # Define the validation function
 @torch.no_grad()
-def validation(model, dataset, dataloader, device, datatype, output_scaler, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
+def validation(model, dataset, dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.eval()
     total_loss = 0.0
     num_samples = 0
-    need_edge_attr = (gnn_model_tab in ["GAT", "AttentiveFP"]) or (
-        gnn_model_tab == "Custom" and customgcn_convolutional_layer_name in [
-            "PDNConv", "GENConv", "ResGatedGraphConv", "GATConv", "GATv2Conv", "TransformerConv", "GeneralConv"])
+    need_edge_attr = model_requires_edge_attr(model)
     
     for batch in dataloader:
         # Get input data
@@ -602,7 +606,7 @@ def validation(model, dataset, dataloader, device, datatype, output_scaler, gnn_
         if dataset.load_data == 'Molecular fingerprints' or dataset.load_data == 'Both':
             fingerprints = batch.fp
             if variance_threshold is not None and pca is not None:
-                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints)
+                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints.double().numpy())
                 fingerprints_pca = pca.transform(fingerprints_variance_thresholded)
                 fingerprints_tensor = torch.tensor(fingerprints_pca).to(device=device, dtype=datatype)
             else:
@@ -610,8 +614,8 @@ def validation(model, dataset, dataloader, device, datatype, output_scaler, gnn_
         else:
             fingerprints_tensor = None
         
-        # Get target values
-        y_scaled = torch.tensor(output_scaler.transform(batch.y), device=device, dtype=datatype)
+        # Get target labels
+        y = batch.y.to(device=device, dtype=datatype)
         
         with torch.no_grad():
             # Forward pass
@@ -623,30 +627,30 @@ def validation(model, dataset, dataloader, device, datatype, output_scaler, gnn_
                 output = model(x, edge_index, batch_index, fingerprints_tensor)
 
             # Compute loss
-            loss = loss_fn(output, y_scaled)
-            total_loss += loss.item() * y_scaled.shape[0]
-        num_samples += y_scaled.shape[0]
+            loss = loss_fn(output, y)
+            if not torch.isfinite(loss):
+                raise ValueError("Validation loss is not finite. Try a lower learning rate or float32 data type.")
+            total_loss += loss.item() * y.shape[0]
+        num_samples += y.shape[0]
 
-    return math.sqrt(total_loss / num_samples) if num_samples > 0 else 0.0
+    return total_loss / num_samples if num_samples > 0 else 0.0
 
-def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype, output_scaler, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca, progress=gr.Progress()):
+def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca, progress=gr.Progress()):
     try:
         ensure_optimizer_matches_model(model, optimizer)
         ensure_model_on_device(model, device)
         if train_dataloader is None or val_dataloader is None:
             raise ValueError("Please process the data first.")
-        if output_scaler is None:
-            raise ValueError("No output scaler is available. Please process the data first.")
 
         # Training loop. Both losses are appended together and the epoch counter is bumped
         # only after a full epoch, so a failure part-way through leaves consistent state.
         for _ in progress.tqdm(range(trained_epochs, epochs + trained_epochs), total=epochs, desc="Training"):
-            train_loss = train(model, dataset, train_dataloader, device, datatype, output_scaler, optimizer, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
-            val_loss = validation(model, dataset, val_dataloader, device, datatype, output_scaler, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
+            train_loss = train(model, dataset, train_dataloader, device, datatype, optimizer, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
+            val_loss = validation(model, dataset, val_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
             train_losses.append(train_loss)
             val_losses.append(val_loss)
-            scheduler.step()
             trained_epochs += 1
+            scheduler.step()
 
         status = f"<span style='color: green;'>Training completed for {trained_epochs} epochs.</span>"
     except Exception as exc:
@@ -657,7 +661,7 @@ def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype,
     plt.plot(train_losses, label='Train loss')
     plt.plot(val_losses, label='Validation loss')
     plt.xlabel('Epoch')
-    plt.ylabel('RMSE loss (scaled targets)')
+    plt.ylabel('BCE with logits loss')
     plt.legend()
     plt.grid(True)
     plt.close(figure)
@@ -684,14 +688,12 @@ def on_export_losses(working_directory_path, file_name, train_losses, val_losses
 
 # Define the test function
 @torch.no_grad()
-def test(model, dataset, dataloader, device, datatype, output_scaler, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
+def test(model, dataset, dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.eval()
     y_test_list = []
-    y_pred_scaled_list = []
-    smiles_arr = []
-    need_edge_attr = (gnn_model_tab in ["GAT", "AttentiveFP"]) or (
-        gnn_model_tab == "Custom" and customgcn_convolutional_layer_name in [
-            "PDNConv", "GENConv", "ResGatedGraphConv", "GATConv", "GATv2Conv", "TransformerConv", "GeneralConv"])
+    logits_list = []
+    smiles_list = []
+    need_edge_attr = model_requires_edge_attr(model)
     
     for batch in dataloader:
         # Get input data
@@ -708,16 +710,16 @@ def test(model, dataset, dataloader, device, datatype, output_scaler, gnn_model_
         if dataset.load_data == 'Molecular fingerprints' or dataset.load_data == 'Both':
             fingerprints = batch.fp
             if variance_threshold is not None and pca is not None:
-                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints)
+                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints.double().numpy())
                 fingerprints_pca = pca.transform(fingerprints_variance_thresholded)
                 fingerprints_tensor = torch.tensor(fingerprints_pca).to(device=device, dtype=datatype)
             else:
                 fingerprints_tensor = fingerprints.to(device=device, dtype=datatype)
         else:
             fingerprints_tensor = None
-        
-        # Get target values
-        y = batch.y.to(dtype=datatype)
+
+        # Get target labels
+        y = batch.y
         smiles = batch.smiles
 
         with torch.no_grad():
@@ -729,95 +731,124 @@ def test(model, dataset, dataloader, device, datatype, output_scaler, gnn_model_
             else:
                 output = model(x, edge_index, batch_index, fingerprints_tensor)
 
-        smiles_arr.extend(smiles)
+        smiles_list.extend(smiles)
         y_test_list.append(y.detach())
-        y_pred_scaled_list.append(output.cpu().detach())
+        logits_list.append(output.cpu().detach())
 
     y_test = torch.cat(y_test_list, dim=0) if y_test_list else torch.tensor([])
-    y_pred_scaled = torch.cat(y_pred_scaled_list, dim=0) if y_pred_scaled_list else torch.tensor([])
-    y_pred = output_scaler.inverse_transform(y_pred_scaled)
-    return y_test, y_pred, smiles_arr
+    logits = torch.cat(logits_list, dim=0) if logits_list else torch.tensor([])
+    return y_test, logits, smiles_list
 
 def on_target_column_change(eval_df, target_column):
     if eval_df is None or eval_df.empty or target_column is None:
-        return None, None
+        return None, None, None
 
     try:
         # Evaluate the model using different metrics
         y_test_target = eval_df[target_column].to_numpy()
         y_pred_target = eval_df[f"{target_column} (Prediction)"].to_numpy()
-        mae = round(mean_absolute_error(y_test_target, y_pred_target), 4)
-        mse = mean_squared_error(y_test_target, y_pred_target)
-        rmse = round(math.sqrt(mse), 4)
-        # R² is undefined when every actual value is identical.
-        r2 = round(r2_score(y_test_target, y_pred_target), 4) if len(y_test_target) > 1 and y_test_target.std() > 0 else float('nan')
+        y_prob_target = eval_df[f"{target_column} (Probability)"].to_numpy()
+        cm = confusion_matrix(y_test_target, y_pred_target, labels=[0, 1])
+        display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1])
+        cm_figure, ax = plt.subplots(figsize=(6, 6))
+        display.plot(cmap=plt.cm.Blues, ax=ax, xticks_rotation='vertical')
+        ax.set_title('Confusion Matrix')
+        plt.close(cm_figure)
 
-        metrics_df = pd.DataFrame({
-            'Metric': ['MAE', 'MSE', 'RMSE', 'R²'],
-            'Value': [mae, round(mse, 4), rmse, r2]
-        })
+        metrics_df = classification_metrics(y_test_target, y_pred_target, y_prob_target)
+        # ROC-AUC and the ROC curve are undefined when the test split holds a single class.
+        single_class = len(set(y_test_target.tolist())) < 2
 
-        # Visualization
-        scatter_plot = plt.figure(figsize=(8, 8))
-        plt.scatter(y_test_target, y_pred_target)
-        limits = [min(y_test_target.min(), y_pred_target.min()), max(y_test_target.max(), y_pred_target.max())]
-        plt.plot(limits, limits, color='navy', lw=1, linestyle='--')
-        plt.xlabel('actual value')
-        plt.ylabel('predicted value')
-        plt.grid(True)
-        plt.close(scatter_plot)
+        roc_auc_figure = plt.figure(figsize=(6, 6))
+        if single_class:
+            plt.text(0.5, 0.5, 'ROC curve unavailable:\nthe test split contains a single class',
+                     ha='center', va='center')
+            plt.axis('off')
+        else:
+            # Generate ROC curve values using probabilities
+            fpr, tpr, _ = roc_curve(y_test_target, y_prob_target)
+            roc_auc_val = auc(fpr, tpr)
+            plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % roc_auc_val)
+            plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+            plt.xlim([0.0, 1.0])
+            plt.ylim([0.0, 1.0])
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title('Receiver Operating Characteristic')
+            plt.legend(loc="lower right")
+        plt.close(roc_auc_figure)
 
-        return metrics_df, scatter_plot
+        return metrics_df, cm_figure, roc_auc_figure
     except Exception as exc:
         gr.Warning(f"Error computing metrics for '{target_column}': {exc}")
-        return None, None
+        return None, None, None
 
-def on_evaluate(model, dataset, test_dataloader, device, datatype, output_scaler, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
+def on_evaluate(model, dataset, test_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     try:
         if model is None or test_dataloader is None:
             raise ValueError("Please process the data and create a model first.")
-        if output_scaler is None:
-            raise ValueError("No output scaler is available. Please process the data, or load a checkpoint that stores one.")
+        columns = ["SMILES"]
+        for target in dataset.target_column_names:
+            columns.extend([target, f"{target} (Prediction)", f"{target} (Probability)"])
+        if len(columns) != len(set(columns)):
+            raise ValueError("Target names overlap generated evaluation columns. Rename the affected targets and retrain.")
         ensure_model_on_device(model, device)
         # Get test predictions
-        y_test, y_pred, test_smiles_arr = test(model, dataset, test_dataloader, device, datatype, output_scaler, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
-        if len(test_smiles_arr) == 0:
+        y_test, logits, smiles_list = test(model, dataset, test_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
+        if logits.numel() == 0:
             raise ValueError("The test split is empty. Please lower the validation size or raise the test size.")
-        y_test_np = y_test.detach().numpy()
-        y_pred_np = y_pred
+        probabilities = torch.sigmoid(logits.float())
+        y_test_np = y_test.int().detach().numpy()
+        y_pred_np = torch.round(probabilities).int().detach().numpy()
 
+        probabilities_np = probabilities.detach().numpy()
         eval_df = pd.DataFrame()
-        eval_df['SMILES'] = test_smiles_arr
+        eval_df['SMILES'] = smiles_list
         for col_idx, col_name in enumerate(dataset.target_column_names):
             eval_df[col_name] = y_test_np[:, col_idx].tolist()
             eval_df[f"{col_name} (Prediction)"] = y_pred_np[:, col_idx].tolist()
+            eval_df[f"{col_name} (Probability)"] = probabilities_np[:, col_idx].tolist()
 
+        metrics_from_predictions("classification", eval_df, dataset.target_column_names)
         status = f"Evaluation completed."
 
-        return f"<span style='color: green;'>{status}</span>", eval_df, gr.update(interactive=True)
+        return f"<span style='color: green;'>{status}</span>", eval_df, gr.update(interactive=True), gr.update(interactive=True)
     except Exception as exc:
         status = f"Error evaluating model: {exc}"
-        return f"<span style='color: red;'>{status}</span>", None, gr.update(interactive=False)
+        return f"<span style='color: red;'>{status}</span>", None, gr.update(interactive=False), gr.update(interactive=False)
+
+def on_export_metrics(working_directory_path, file_name, eval_df, dataset):
+    try:
+        if dataset is None:
+            raise ValueError("Please process the data and run an evaluation first.")
+        metrics = metrics_from_predictions("classification", eval_df, dataset.target_column_names)
+        file_name = export_result_csv(working_directory_path, file_name, metrics)
+        status = f"Test metrics exported: {file_name}"
+        return f"<span style='color: green;'>{escape(status)}</span>", get_working_directory_contents(working_directory_path)
+    except Exception as exc:
+        status = f"Error exporting test metrics: {exc}"
+        return f"<span style='color: red;'>{escape(status)}</span>", gr.update()
 
 def on_export_evaluation(working_directory_path, file_name, eval_df):
     try:
-        if eval_df is None:
-            raise ValueError("Please run an evaluation first.")
-        file_name = sanitize_path_component(file_name, "file name")
-        file_path = os.path.join(working_directory_path, f"{file_name}.csv")
-        eval_df.to_csv(file_path, index=False)
-        status = f"Evaluation exported: {file_name}.csv"
-        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+        file_name = export_result_csv(working_directory_path, file_name, eval_df)
+        status = f"Evaluation exported: {file_name}"
+        return f"<span style='color: green;'>{escape(status)}</span>", get_working_directory_contents(working_directory_path)
     except Exception as exc:
         status = f"Error exporting evaluation: {exc}"
-        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
+        return f"<span style='color: red;'>{escape(status)}</span>", gr.update()
 
 def on_process_prediction_data(working_directory_path, prediction_dataset_file, dataset, prediction_graph_directory, prediction_molecular_fingerprint_directory, datatype, batch_size):
     try:
+        if dataset is None:
+            raise ValueError("Please process the training data first.")
         # Process the prediction dataset and create a dataloader
+        prediction_dataset_file = sanitize_path_component(prediction_dataset_file, "dataset file name")
         prediction_dataset_file_path = os.path.join(working_directory_path, prediction_dataset_file)
-        prediction_graph_directory_path = os.path.join(working_directory_path, prediction_graph_directory)
-        prediction_molecular_fingerprint_directory_path =  os.path.join(working_directory_path, prediction_molecular_fingerprint_directory)                                            
+        prediction_graph_directory_path = (os.path.join(working_directory_path, sanitize_path_component(prediction_graph_directory, "graph directory"))
+                                           if dataset.load_data in ('Graphs', 'Both') else None)
+        prediction_molecular_fingerprint_directory_path = (os.path.join(working_directory_path, sanitize_path_component(prediction_molecular_fingerprint_directory, "molecular fingerprint directory"))
+                                                           if dataset.load_data in ('Molecular fingerprints', 'Both') else None)
         prediction_dataset = MolecularDataset(prediction_dataset_file_path, dataset.load_data, prediction_graph_directory_path, prediction_molecular_fingerprint_directory_path, datatype)
         prediction_dataloader = DataLoader(prediction_dataset, batch_size=batch_size)
         
@@ -829,13 +860,11 @@ def on_process_prediction_data(working_directory_path, prediction_dataset_file, 
 
 # Define the predict function
 @torch.no_grad()
-def predict(model, dataset, dataloader, device, datatype, output_scaler, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
+def predict(model, dataset, dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.eval()
     smiles_list = []
-    y_pred_scaled_list = []
-    need_edge_attr = (gnn_model_tab in ["GAT", "AttentiveFP"]) or (
-        gnn_model_tab == "Custom" and customgcn_convolutional_layer_name in [
-            "PDNConv", "GENConv", "ResGatedGraphConv", "GATConv", "GATv2Conv", "TransformerConv", "GeneralConv"])
+    logits_list = []
+    need_edge_attr = model_requires_edge_attr(model)
     
     for batch in dataloader:
         # Get input data
@@ -852,7 +881,7 @@ def predict(model, dataset, dataloader, device, datatype, output_scaler, gnn_mod
         if dataset.load_data == 'Molecular fingerprints' or dataset.load_data == 'Both':
             fingerprints = batch.fp
             if variance_threshold is not None and pca is not None:
-                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints)
+                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints.double().numpy())
                 fingerprints_pca = pca.transform(fingerprints_variance_thresholded)
                 fingerprints_tensor = torch.tensor(fingerprints_pca).to(device=device, dtype=datatype)
             else:
@@ -868,31 +897,31 @@ def predict(model, dataset, dataloader, device, datatype, output_scaler, gnn_mod
                 output = model(x, edge_index, edge_attr, batch_index, fingerprints_tensor)
             else:
                 output = model(x, edge_index, batch_index, fingerprints_tensor)
-            
+        
         smiles_list.extend(batch.smiles)
-        y_pred_scaled_list.append(output.cpu())
+        logits_list.append(output.cpu().detach())
 
-    y_pred_scaled = torch.cat(y_pred_scaled_list, dim=0) if y_pred_scaled_list else torch.tensor([])
-    y_pred = output_scaler.inverse_transform(y_pred_scaled)
-    return smiles_list, y_pred
+    logits = torch.cat(logits_list, dim=0) if logits_list else torch.tensor([])
 
-def on_predict(model, dataset, prediction_dataset, predict_dataloader, device, datatype, output_scaler, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
+    return smiles_list, logits
+
+def on_predict(model, dataset, prediction_dataset, predict_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     try:
         if model is None or predict_dataloader is None:
             raise ValueError("Please process the prediction data first.")
-        if output_scaler is None:
-            raise ValueError("No output scaler is available. Please process the data, or load a checkpoint that stores one.")
         ensure_model_on_device(model, device)
         # Get predictions
-        smiles_list, y_pred = predict(model, prediction_dataset, predict_dataloader, device, datatype, output_scaler, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
-        if len(smiles_list) == 0:
+        smiles_list, logits = predict(model, prediction_dataset, predict_dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
+        if logits.numel() == 0:
             raise ValueError("The prediction dataset is empty.")
-        y_pred_np = y_pred
+        probabilities = torch.sigmoid(logits.float())
+        y_pred_np = torch.round(probabilities).int().detach().numpy()
 
         prediction_df = pd.DataFrame()
         prediction_df['SMILES'] = smiles_list
         for col_idx, col_name in enumerate(dataset.target_column_names):
             prediction_df[f"{col_name} (Prediction)"] = y_pred_np[:, col_idx].tolist()
+            prediction_df[f"{col_name} (Probability)"] = probabilities[:, col_idx].detach().numpy().tolist()
 
         status = f"Prediction completed."
 
@@ -914,11 +943,12 @@ def on_export_prediction(working_directory_path, prediction_file_name, predictio
         status = f"Error exporting predictions: {exc}"
         return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
 
-def regression_tab_content():
-    with gr.Tab("Regression") as regression_tab:
+def binary_classification_hybrid_tab_content():
+    with gr.Tab("Binary Classification - Hybrid GNN") as binary_classification_tab:
         with gr.Row():
             with gr.Column(scale=1):
-                working_directory_dropdown = gr.Dropdown(label="Working Directory", choices=get_working_directories(), value="wd", allow_custom_value=True)
+                working_directory_dropdown = gr.Dropdown(label="Working Directory", choices=get_working_directories(), value="wd", allow_custom_value=True,
+                                                         info="Folders in Data/Classification. Select one or enter a new folder name.")
                 working_directory_path_state = gr.State()
                 open_working_directory_button = gr.Button(value="Create/Open Working Directory")
                 working_directory_content_list_state = gr.State()
@@ -970,6 +1000,9 @@ def regression_tab_content():
                             variance_threshold_slider = gr.Slider(minimum=0, maximum=1.0, value=0.01, step=0.01, label="Variance threshold", visible=False)
                             pca_num_components_slider = gr.Slider(minimum=1, maximum=256, value=32, step=1, label="PCA number of components", visible=False)
                         with gr.Column(scale=1):
+                            split_method_radio = gr.Radio(
+                                label="Split method", choices=["Random", "Scaffold"], value="Random",
+                                info="Scaffold keeps molecules with the same Murcko scaffold in one split. Sizes are approximate; all acyclic molecules share one scaffold.")
                             test_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Test size")
                             val_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Validation size")
                             batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64, 128, 256, 512])
@@ -982,7 +1015,6 @@ def regression_tab_content():
                             test_dataloader_state = gr.State()
                             variance_threshold_state = gr.State()
                             pca_state = gr.State()
-                            output_scaler_state = gr.State()
                 with gr.Accordion("Model"):
                     with gr.Row():
                         with gr.Column(scale=1) as graph_convolutional_block:
@@ -1086,12 +1118,17 @@ def regression_tab_content():
                             evaluate_button = gr.Button(value="Evaluate", interactive=False)
                             target_column_dropdown = gr.Dropdown(label="Output", choices=[]) 
                             evaluation_metrics_dataframe = gr.DataFrame(label="Evaluation metrics", wrap=False, interactive=False)
-                            evaluation_file_name_textbox = gr.Textbox(label="File name", value="evaluation")
-                            export_evaluation_button = gr.Button(value="Export", interactive=False)
+                            gr.Markdown("AUPRC uses trapezoidal integration; average precision is reported separately. "
+                                        "NaN marks unavailable metrics. Ranking and balanced metrics are reported only when both classes are present.")
+                            metrics_file_name_textbox = gr.Textbox(label="Metrics export file", value="test_metrics")
+                            export_metrics_button = gr.Button(value="Export test metrics (all targets)", interactive=False)
+                            evaluation_file_name_textbox = gr.Textbox(label="Evaluation export file", value="evaluation")
+                            export_evaluation_button = gr.Button(value="Export evaluation rows (all targets)", interactive=False)
                             evaluation_df_state = gr.State()
-                        with gr.Column(scale=1):
-                            evaluation_plot = gr.Plot()
-                with gr.Accordion("Make prediction"):
+                        with gr.Column(scale=2):
+                            confusion_matrix_plot = gr.Plot()
+                            roc_auc_curve_plot = gr.Plot()
+                with gr.Accordion("Make predictions"):
                     with gr.Row():
                         with gr.Column(scale=1):
                             prediction_dataset_file_dropdown = gr.Dropdown(label="Prediction dataset file", choices=[])
@@ -1131,11 +1168,27 @@ def regression_tab_content():
 
     # Process data interactions
     dimensionality_reduction_checkbox.change(on_dimensionality_reduction_change, dimensionality_reduction_checkbox, [variance_threshold_slider, pca_num_components_slider])
-    process_data_button.click(on_process_data, [working_directory_path_state, dataset_file_process_data_dropdown, load_data_radio, graph_directory_dropdown, molecular_fingerprint_directory_dropdown, datatype_state, dimensionality_reduction_checkbox, variance_threshold_slider, pca_num_components_slider, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, random_seed_slider],
-                              [status_html, create_model_button, target_column_dropdown, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state, variance_threshold_state, pca_state, output_scaler_state])
+    bind_data_processing(
+        process_data_button, on_process_data,
+        [working_directory_path_state, dataset_file_process_data_dropdown, load_data_radio, graph_directory_dropdown, molecular_fingerprint_directory_dropdown, datatype_state, dimensionality_reduction_checkbox, variance_threshold_slider, pca_num_components_slider, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, random_seed_slider, split_method_radio],
+        [status_html, create_model_button, target_column_dropdown, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state, variance_threshold_state, pca_state],
+        clear_states=[model_state, optimizer_state, schedular_state, evaluation_df_state,
+                      prediction_dataset_state, prediction_dataloader_state],
+        loss_states=[train_losses_state, val_losses_state], epoch_state=trained_epochs_state,
+        disable_buttons=[create_optimizer_button, train_button, evaluate_button,
+                         save_checkpoint_button, load_checkpoint_button, process_prediction_data_button,
+                         predict_button, export_losses_button, export_evaluation_button, export_metrics_button, export_prediction_button],
+        clear_components=[model_summary_textarea, training_plot, evaluation_metrics_dataframe,
+                          confusion_matrix_plot, roc_auc_curve_plot, prediction_dataframe],
+    )
     
     # Create model interactions
-    create_model_button.click(on_create_model, [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, random_seed_slider, variance_threshold_state, pca_state,
+    result_reset = dict(
+        clear_states=[evaluation_df_state],
+        disable_buttons=[export_evaluation_button, export_metrics_button, export_prediction_button],
+        clear_components=[evaluation_metrics_dataframe, confusion_matrix_plot, roc_auc_curve_plot, prediction_dataframe],
+    )
+    bind_result_invalidation(create_model_button, on_create_model, [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, random_seed_slider, variance_threshold_state, pca_state,
                                                 gcn_n_hiddens, gcn_num_layers, gcn_dropout, gcn_n_outputs,
                                                 graph_sage_n_hiddens, graph_sage_num_layers, graph_sage_dropout, graph_sage_n_outputs,
                                                 gin_n_hiddens, gin_num_layers, gin_dropout, gin_n_outputs,
@@ -1145,32 +1198,33 @@ def regression_tab_content():
                                                 customgcn_convolutional_layer_name, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_heads, customgcn_n_outputs,
                                                 mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                                                 predictor_n_hiddens, predictor_n_layers],
-                                                [status_html, model_summary_textarea, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state])
-    save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, variance_threshold_state, pca_state, output_scaler_state], [status_html, working_directory_content_list_state])
-    load_checkpoint_button.click(on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state, output_scaler_state],
-                                 [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state, output_scaler_state])
+                                                [status_html, model_summary_textarea, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state], **result_reset)
+    save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, variance_threshold_state, pca_state], [status_html, working_directory_content_list_state])
+    bind_result_invalidation(load_checkpoint_button, on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state],
+                                 [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state], **result_reset)
     
     # Train model interactions
     create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [status_html, optimizer_state, schedular_state, train_button])
-    train_button.click(on_train, [model_state, dataset_state, train_dataloader_state, val_dataloader_state, device_dropdown, datatype_state, output_scaler_state,
+    bind_result_invalidation(train_button, on_train, [model_state, dataset_state, train_dataloader_state, val_dataloader_state, device_dropdown, datatype_state,
                                   optimizer_state, schedular_state, epochs_slider, trained_epochs_state, train_losses_state, val_losses_state,
                                   gnn_model_tab_state, customgcn_convolutional_layer_name, variance_threshold_state, pca_state],
-                                  [status_html, training_plot, export_losses_button, trained_epochs_state, train_losses_state, val_losses_state])
+                                  [status_html, training_plot, export_losses_button, trained_epochs_state, train_losses_state, val_losses_state], **result_reset)
     export_losses_button.click(on_export_losses, [working_directory_path_state, loss_file_name_textbox, train_losses_state, val_losses_state], [status_html, working_directory_content_list_state])
     
     # Evaluate model interactions
-    evaluate_button.click(on_evaluate, [model_state, dataset_state, test_dataloader_state, device_dropdown, datatype_state, output_scaler_state,
+    evaluate_button.click(on_evaluate, [model_state, dataset_state, test_dataloader_state, device_dropdown, datatype_state,
                                         gnn_model_tab_state, customgcn_convolutional_layer_name, variance_threshold_state, pca_state],
-                                        [status_html, evaluation_df_state, export_evaluation_button]
-                         ).then(on_target_column_change, [evaluation_df_state, target_column_dropdown], [evaluation_metrics_dataframe, evaluation_plot])
-    target_column_dropdown.change(on_target_column_change, [evaluation_df_state, target_column_dropdown], [evaluation_metrics_dataframe, evaluation_plot])
+                                        [status_html, evaluation_df_state, export_evaluation_button, export_metrics_button]
+                         ).then(on_target_column_change, [evaluation_df_state, target_column_dropdown], [evaluation_metrics_dataframe, confusion_matrix_plot, roc_auc_curve_plot])
+    target_column_dropdown.change(on_target_column_change, [evaluation_df_state, target_column_dropdown], [evaluation_metrics_dataframe, confusion_matrix_plot, roc_auc_curve_plot])
     export_evaluation_button.click(on_export_evaluation, [working_directory_path_state, evaluation_file_name_textbox, evaluation_df_state], [status_html, working_directory_content_list_state])
+    export_metrics_button.click(on_export_metrics, [working_directory_path_state, metrics_file_name_textbox, evaluation_df_state, dataset_state], [status_html, working_directory_content_list_state])
         
     # Make prediction interactions
     process_prediction_data_button.click(on_process_prediction_data, [working_directory_path_state, prediction_dataset_file_dropdown, dataset_state, prediction_graph_directory_dropdown, prediction_molecular_fingerprint_directory_dropdown, datatype_state, batch_size_dropdown], [status_html, prediction_dataset_state, prediction_dataloader_state, predict_button])
-    predict_button.click(on_predict, [model_state, dataset_state, prediction_dataset_state, prediction_dataloader_state, device_dropdown, datatype_state, output_scaler_state,
+    predict_button.click(on_predict, [model_state, dataset_state, prediction_dataset_state, prediction_dataloader_state, device_dropdown, datatype_state,
                                       gnn_model_tab_state, customgcn_convolutional_layer_name, variance_threshold_state, pca_state],
                                       [status_html, prediction_dataframe, export_prediction_button])
     export_prediction_button.click(on_export_prediction, [working_directory_path_state, prediction_file_name_textbox, prediction_dataframe], [status_html, working_directory_content_list_state])
     
-    return regression_tab
+    return binary_classification_tab

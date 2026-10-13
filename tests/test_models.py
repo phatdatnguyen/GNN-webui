@@ -34,9 +34,14 @@ def graph():
     """A two-molecule batch, so pooling and the batch vector are actually exercised."""
     torch.manual_seed(0)
     n_nodes = 12
+    # A PyG batch contains disjoint graphs: bonds never connect different molecules.
+    edge_index = torch.cat([
+        torch.randint(0, 6, (2, 15)),
+        torch.randint(0, 6, (2, 15)) + 6,
+    ], dim=1)
     return dict(
         x=torch.randn(n_nodes, N_IN),
-        edge_index=torch.randint(0, n_nodes, (2, 30)),
+        edge_index=edge_index,
         edge_attr=torch.randn(30, EDGE_DIM),
         batch=torch.cat([torch.zeros(6, dtype=torch.long), torch.ones(6, dtype=torch.long)]),
         fp=torch.randn(2, MLP[0]),
@@ -164,10 +169,10 @@ def test_pooling_separates_the_graphs_in_a_batch(graph):
 
         perturbed = graph["x"].clone()
         perturbed[6:] += 10.0                     # only the second molecule's nodes
-        edges_within_first = graph["edge_index"][:, (graph["edge_index"] < 6).all(dim=0)]
-        second = model(perturbed, edges_within_first, graph["batch"], graph["fp"])
+        second = model(perturbed, graph["edge_index"], graph["batch"], graph["fp"])
 
     assert first.shape == (2, N_TARGETS)
+    torch.testing.assert_close(first[0], second[0])
     assert not torch.allclose(first[1], second[1])
 
 
@@ -251,3 +256,57 @@ def test_gradients_flow_through_both_branches(graph):
     mlp_grads = [p.grad for p in model.mlp.parameters() if p.grad is not None]
     assert gcn_grads and any(g.abs().sum() > 0 for g in gcn_grads)
     assert mlp_grads and any(g.abs().sum() > 0 for g in mlp_grads)
+
+
+@pytest.mark.parametrize("layer_name", ["GENConv", "TransformerConv"])
+@pytest.mark.parametrize("n_layers", [1, 2])
+def test_single_atom_training_batch_uses_running_normalization(layer_name, n_layers, graph):
+    """A final training batch can contain only a one-atom molecule (e.g. methane).
+    BatchNorm must use its running statistics without corrupting them or disabling
+    gradient computation for that sample.
+    """
+    model = build_custom(layer_name, n_layers)
+    # First obtain representative running statistics from a normal training batch.
+    model(graph["x"], graph["edge_index"], graph["edge_attr"], graph["batch"], graph["fp"])
+    norms = [layer for layer in model.modules() if isinstance(layer, torch.nn.BatchNorm1d)]
+    before = [{key: value.clone() for key, value in layer.state_dict().items()} for layer in norms]
+    single = (
+        graph["x"][:1], torch.empty((2, 0), dtype=torch.long),
+        torch.empty((0, EDGE_DIM)), torch.zeros(1, dtype=torch.long), graph["fp"][:1],
+    )
+
+    out = model(*single)
+    assert out.shape == (1, N_TARGETS)
+    assert torch.isfinite(out).all()
+    out.sum().backward()
+    assert all(parameter.grad is not None and torch.isfinite(parameter.grad).all()
+               for norm in norms for parameter in norm.parameters())
+    for norm, state in zip(norms, before):
+        assert norm.training
+        for key, value in norm.state_dict().items():
+            torch.testing.assert_close(value, state[key])
+
+    model.eval()
+    with torch.no_grad():
+        torch.testing.assert_close(out, model(*single))
+
+
+@pytest.mark.parametrize("name", ALL_CUSTOM_LAYERS + list(TOP_LEVEL))
+def test_edge_feature_dispatch_uses_model_type(name):
+    model = build_custom(name, 1) if name in ALL_CUSTOM_LAYERS else TOP_LEVEL[name][0]()
+    assert models.model_requires_edge_attr(model) == (name in EDGE_ATTR_LAYERS or name in {"GAT", "AttentiveFP"})
+
+
+@pytest.mark.parametrize("layer_name", ["GENConv", "TransformerConv"])
+def test_single_node_normalization_keeps_legacy_checkpoints_and_batch_behavior(layer_name, graph, monkeypatch):
+    # Old checkpoints use plain BatchNorm1d parameters and running statistics.
+    with monkeypatch.context() as context:
+        context.setattr(models, "_SingleNodeBatchNorm1d", torch.nn.BatchNorm1d)
+        legacy = build_custom(layer_name, 2)
+    current = build_custom(layer_name, 2)
+    current.load_state_dict(legacy.state_dict(), strict=True)
+    args = (graph["x"], graph["edge_index"], graph["edge_attr"], graph["batch"], graph["fp"])
+
+    torch.testing.assert_close(current(*args), legacy(*args))
+    for key, value in current.state_dict().items():
+        torch.testing.assert_close(value, legacy.state_dict()[key])

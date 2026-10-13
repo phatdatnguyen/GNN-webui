@@ -5,9 +5,47 @@ from torch_geometric.nn import GCN, GraphSAGE, GIN, GAT, EdgeCNN, AttentiveFP, G
 # Chebyshev filter size for ChebConv. It has no dedicated UI control, so it is fixed here.
 CHEB_CONV_K = 3
 
+
+def model_requires_edge_attr(model):
+    """Select the forward signature from the actual model, independent of UI tabs."""
+    return isinstance(model, (
+        GATModel, AttentiveFPModel, PDNConvModel, GENConvModel,
+        ResGatedGraphConvModel, GATConvModel, GATv2ConvModel,
+        TransformerConvModel, GeneralConvModel,
+    ))
+
+
 def _edge_dim_or_none(edge_dim):
     # Layers that take an optional edge_dim expect None (not 0) when there are no edge features.
     return edge_dim if edge_dim else None
+
+
+class _SingleNodeBatchNorm1d(BatchNorm1d):
+    """Keep one-atom training batches valid using the existing running statistics."""
+
+    def forward(self, x):
+        if self.training and x.dim() == 2 and x.size(0) == 1:
+            return torch.nn.functional.batch_norm(
+                x, self.running_mean, self.running_var, self.weight, self.bias,
+                training=False, momentum=0.0, eps=self.eps,
+            )
+        return super().forward(x)
+
+
+def _gen_conv(n_inputs, n_hiddens, edge_dim):
+    conv = GENConv(n_inputs, n_hiddens, edge_dim=_edge_dim_or_none(edge_dim))
+    # GENConv also owns BatchNorm layers inside its MLP. Replacing them at
+    # construction preserves the parameter names and existing checkpoint format.
+    for i, layer in enumerate(conv.mlp):
+        if isinstance(layer, BatchNorm1d):
+            replacement = _SingleNodeBatchNorm1d(
+                layer.num_features, eps=layer.eps, momentum=layer.momentum,
+                affine=layer.affine, track_running_stats=layer.track_running_stats,
+            )
+            replacement.load_state_dict(layer.state_dict())
+            conv.mlp[i] = replacement
+    return conv
+
 
 class MLPModel(torch.nn.Module):
     def __init__(
@@ -1427,10 +1465,10 @@ class GENConvModel(torch.nn.Module):
 
         if n_gcn_outputs > 0:
             self.gcn = ModuleList()
-            self.gcn.append(GENConv(n_gcn_inputs, n_gcn_hiddens, edge_dim=_edge_dim_or_none(edge_dim)))
+            self.gcn.append(_gen_conv(n_gcn_inputs, n_gcn_hiddens, edge_dim))
             self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs))
             for i in range(1, n_gcn_layers):
-                self.gcn.append(GENConv(n_gcn_hiddens, n_gcn_hiddens, edge_dim=_edge_dim_or_none(edge_dim)))
+                self.gcn.append(_gen_conv(n_gcn_hiddens, n_gcn_hiddens, edge_dim))
                 self.gcn.append(Linear(n_gcn_hiddens, n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs))
         else:
             self.gcn = None
@@ -1803,12 +1841,12 @@ class TransformerConvModel(torch.nn.Module):
             first_out = n_gcn_hiddens if n_gcn_layers > 1 else n_gcn_outputs
             self.gcn.append(TransformerConv(n_gcn_inputs, n_gcn_hiddens, n_gcn_heads, edge_dim=_edge_dim_or_none(edge_dim)))
             self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, first_out))
-            self.gcn.append(BatchNorm1d(first_out))
+            self.gcn.append(_SingleNodeBatchNorm1d(first_out))
             for i in range(1, n_gcn_layers):
                 layer_out = n_gcn_hiddens if i != n_gcn_layers - 1 else n_gcn_outputs
                 self.gcn.append(TransformerConv(n_gcn_hiddens, n_gcn_hiddens, n_gcn_heads, edge_dim=_edge_dim_or_none(edge_dim)))
                 self.gcn.append(Linear(n_gcn_hiddens*n_gcn_heads, layer_out))
-                self.gcn.append(BatchNorm1d(layer_out))
+                self.gcn.append(_SingleNodeBatchNorm1d(layer_out))
         else:
             self.gcn = None
 
