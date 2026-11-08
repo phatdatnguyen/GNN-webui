@@ -220,10 +220,25 @@ different data or model settings is refused; choose another model name to keep t
 runs separate. Split-result folders remain `random_seed_<data split seed>/` beside
 the `MODEL_` folders.
 
-The saved-model selectors find files inside `MODEL_` folders. Loading a saved
-run restores its recorded name and model seed. Training and evaluation require its
-original processed split and features; prediction can use compatible new data. The
-block rename also changes hybrid neural-network checkpoint parameter keys to
+The saved-model selectors find files inside `MODEL_` folders. Saving selects the new
+checkpoint immediately; opening or reopening a working directory rescans its model
+folders, including files added outside the app. Checkpoint selections use portable
+relative paths on Windows and Linux.
+
+Loading a saved run restores its recorded name and model seed. For GNN models,
+create a fresh optimizer after loading a checkpoint before continuing training;
+optimizer moments and scheduler state from earlier training are cleared. Training
+and evaluation require the original processed split and features. Prediction can
+use compatible new data and retains the loaded model's recorded target names.
+Hybrid predictions check saved fingerprint type, radius, and bit count when that
+metadata is available. Re-extract prediction fingerprints with matching settings
+if the app reports missing or incompatible metadata.
+
+GNN loss plots and exports use completed epoch numbers starting at 1. After loading
+a checkpoint, they contain only the subsequent training history, with epoch numbers
+continuing from the saved checkpoint.
+
+The block rename also changes hybrid neural-network checkpoint parameter keys to
 `graph_encoder`, `fingerprint_encoder`, and `prediction_head`. Old parameter keys
 are not migrated; create and save new models for the renamed architecture.
 
@@ -378,6 +393,8 @@ Useful selections:
 pytest tests/test_models.py          # every architecture, at every layer count
 pytest tests/test_handlers.py        # the Gradio callbacks end to end
 pytest tests/test_classical_api.py tests/test_evaluation_exports_api.py  # all six export flows through Gradio
+pytest tests/test_checkpoint_refresh_api.py tests/test_prediction_targets.py  # checkpoint refresh and prediction labels
+pytest tests/test_loss_epochs.py tests/test_prediction_features.py  # resumed epochs and fingerprint compatibility
 pytest tests/test_run_utils.py tests/test_similarity.py  # run provenance and similarity calculations
 pytest -k checkpoint                 # one topic across all files
 ```

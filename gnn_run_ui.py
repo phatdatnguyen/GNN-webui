@@ -5,12 +5,13 @@ from functools import wraps
 import html
 import inspect
 import os
+from numbers import Integral
 
 import gradio as gr
 
-from run_utils import ensure_run_directory, make_run_context, read_run_context_for_file, rebase_run_context, run_directory
+from run_utils import ensure_run_directory, list_saved_models, make_run_context, read_run_context_for_file, rebase_run_context, run_directory
 from run_utils import ensure_model_split as validate_model_split
-from utils import load_model_checkpoint, prefixed_feature_directory
+from utils import load_model_checkpoint, prefixed_feature_directory, sanitize_path_component
 from feature_provenance import capture_feature_sources as snapshot_feature_sources
 
 
@@ -147,22 +148,108 @@ def route_model_export(callback):
             return f"<span style='color: red;'>Error exporting results: {html.escape(str(exc))}</span>", gr.update()
     signature = inspect.signature(callback)
     export_for_model.__signature__ = signature.replace(parameters=[
-        *signature.parameters.values(), inspect.Parameter("model", inspect.Parameter.POSITIONAL_OR_KEYWORD)])
+        *signature.parameters.values(), inspect.Parameter("model", inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None)])
     return export_for_model
 
 
+def loss_epoch_numbers(train_losses, val_losses, trained_epochs=None):
+    """Identify completed epochs in histories that may begin after a checkpoint."""
+    if train_losses is None or val_losses is None or len(train_losses) != len(val_losses):
+        raise ValueError("Training and validation loss histories must have the same length.")
+    count = len(train_losses)
+    completed = count if trained_epochs is None else trained_epochs
+    if isinstance(completed, bool) or not isinstance(completed, Integral) or completed < count:
+        raise ValueError("Completed epoch count must be an integer at least as large as the loss history.")
+    return range(completed - count + 1, completed + 1)
+
+
 def bind_working_directory(component, event, callback, inputs, outputs, *, reset_updates,
-                           concurrency_id=None):
-    """Clear split and model state in the response that changes the workdir."""
-    all_outputs = list(dict.fromkeys([*outputs, *reset_updates]))
+                           concurrency_id=None, refresh_callback=None, refresh_inputs=(),
+                           refresh_outputs=(), path_output=None):
+    """Reset state and refresh selectors atomically, even when directory names match."""
+    inputs = list(inputs) if isinstance(inputs, (list, tuple)) else [inputs]
+    all_outputs = list(dict.fromkeys([*outputs, *reset_updates, *refresh_outputs]))
+    signature = inspect.signature(callback)
+    parameters = list(signature.parameters.values())
+    if refresh_callback is not None:
+        parameters.extend(list(inspect.signature(refresh_callback).parameters.values())[1:])
+    wrapped_signature = signature.replace(parameters=parameters)
 
     @wraps(callback)
     def open_and_reset(*args, **kwargs):
-        result = dict(zip(outputs, callback(*args, **kwargs), strict=True))
+        bound = wrapped_signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        values = list(bound.arguments.values())
+        result = dict(zip(outputs, callback(*values[:len(inputs)]), strict=True))
         result.update({component: deepcopy(value) for component, value in reset_updates.items()})
+        if refresh_callback is not None:
+            try:
+                refreshed = refresh_callback(result[path_output], *values[len(inputs):])
+                result.update(zip(refresh_outputs, refreshed, strict=True))
+            except Exception as exc:
+                # A refresh failure must still publish the new path and its state reset.
+                gr.Warning(f"Could not refresh the working directory: {exc}")
+                result.update((output, gr.update(choices=[], value=None) if isinstance(output, gr.Dropdown)
+                               else gr.update(value=None)) for output in refresh_outputs)
         return result
 
-    return getattr(component, event)(open_and_reset, inputs, all_outputs, concurrency_id=concurrency_id)
+    open_and_reset.__signature__ = wrapped_signature
+    return getattr(component, event)(open_and_reset, [*inputs, *refresh_inputs], all_outputs,
+                                     concurrency_id=concurrency_id)
+
+
+def bind_checkpoint_save(button, callback, inputs, outputs, checkpoint_dropdown, *, concurrency_id=None):
+    """Publish a saved checkpoint and its selection without a directory-state event."""
+    signature = inspect.signature(callback)
+
+    @wraps(callback)
+    def save_and_refresh(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        response = callback(*args, **kwargs)
+        result = dict(zip(outputs, response, strict=True))
+        result[checkpoint_dropdown] = gr.update()
+        if "color: green" in response[0]:
+            try:
+                values = bound.arguments
+                workdir = values["working_directory_path"]
+                context = getattr(values["model"], "_run_context", None)
+                filename = f"{sanitize_path_component(values['checkpoint_name'], 'checkpoint name')}_{values['trained_epochs']}.ckpt"
+                selected = f"{os.path.basename(run_directory(context))}/{filename}" if context else filename
+                choices = list_saved_models(workdir, ".ckpt")
+                result[checkpoint_dropdown] = gr.update(choices=choices, value=selected if selected in choices else None)
+            except Exception as exc:
+                result[outputs[0]] += (" <span style='color: orange;'>The checkpoint was saved, but its list "
+                                       f"could not be refreshed: {html.escape(str(exc))}. Reopen the working directory to retry.</span>")
+        return result
+
+    return button.click(save_and_refresh, inputs, [*outputs, checkpoint_dropdown], concurrency_id=concurrency_id)
+
+
+def reset_checkpoint_optimizer(callback):
+    """Loaded weights need a fresh optimizer; failed loads preserve its state."""
+    signature = inspect.signature(callback)
+    wrapped_signature = signature.replace(parameters=[
+        *signature.parameters.values(),
+        inspect.Parameter("optimizer", inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None),
+        inspect.Parameter("scheduler", inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None),
+    ])
+
+    @wraps(callback)
+    def load_and_reset(*args, **kwargs):
+        bound = wrapped_signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        optimizer = bound.arguments.pop("optimizer")
+        scheduler = bound.arguments.pop("scheduler")
+        result = callback(**bound.arguments)
+        if "color: green" in result[0]:
+            message = result[0].replace("</span>", " Create a new optimizer before continuing training.</span>")
+            return (message, *result[1:], None, None, gr.update(interactive=False),
+                    gr.update(value=None), gr.update(interactive=False))
+        return (*result, optimizer, scheduler, gr.update(), gr.update(), gr.update())
+
+    load_and_reset.__signature__ = wrapped_signature
+    return load_and_reset
 
 
 def directory_reset_updates(clear_states, loss_states, epoch_state, disable_buttons,

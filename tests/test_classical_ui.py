@@ -358,6 +358,75 @@ def test_fit_load_and_open_clear_previous_evaluation(classical_case, monkeypatch
 
 
 @pytest.mark.parametrize("module", MODULES, ids=lambda module: module.__name__)
+def test_open_reports_directory_listing_failure_and_clears_old_choices(module, tmp_path, monkeypatch):
+    monkeypatch.setattr(module, "DATA_DIR", str(tmp_path))
+    blocks = build(module)
+    open_event = next(event for event in blocks.fns.values()
+                      if getattr(event.fn, "__name__", None) == "on_open_working_directory")
+
+    def deny_listing(*args, **kwargs):
+        raise PermissionError("Cannot read model directory")
+
+    monkeypatch.setattr(run_utils, "list_saved_models", deny_listing)
+    result = open_event.fn("experiment")
+    message = next(value for component, value in result.items() if isinstance(component, gr.HTML))
+    assert is_error(message) and "Cannot read model directory" in message
+    selectors = [component for component in result
+                 if isinstance(component, gr.Dropdown) and component.label != "Working Directory"]
+    assert selectors
+    assert all(result[component]["choices"] == [] and result[component]["value"] is None
+               for component in selectors)
+    action_buttons = [component for component in result if isinstance(component, gr.Button)]
+    assert action_buttons
+    assert all(result[component]["interactive"] is False for component in action_buttons)
+
+
+def test_failed_save_preserves_checkpoint_controls(classical_case, monkeypatch):
+    workflow, directory = classical_case
+    _, fitted, _ = fitted_case(workflow, directory)
+    module = classification if workflow.task == "classification" else regression
+    monkeypatch.setattr(module, "DATA_DIR", workflow.data_root())
+    save = callback(build(module), "on_save_model")
+    result = save.fn(directory, "../outside", fitted, *[component.value for component in save.inputs[3:]])
+    assert len(result) == 1
+    assert is_error(next(iter(result.values())))
+    assert not Path(run_utils.run_directory(fitted.run_context)).exists()
+
+
+@pytest.mark.parametrize("module", MODULES, ids=lambda module: module.__name__)
+@pytest.mark.parametrize("error", [FileNotFoundError, PermissionError])
+def test_reopen_lists_saved_models_when_an_unrelated_entry_cannot_be_read(module, tmp_path, monkeypatch, error):
+    monkeypatch.setattr(module, "DATA_DIR", str(tmp_path))
+    blocks = build(module)
+    _, directory = module.on_open_working_directory("experiment")
+    model_directory = Path(directory) / "MODEL_test_0"
+    model_directory.mkdir()
+    (model_directory / "model.joblib").write_bytes(b"model")
+    unreadable = Path(directory) / "unrelated.txt"
+    unreadable.write_text("metadata becomes unavailable during refresh")
+    getmtime = os.path.getmtime
+
+    def interrupted_metadata(path):
+        if os.fspath(path) == str(unreadable):
+            raise error("Entry disappeared or became inaccessible")
+        return getmtime(path)
+
+    monkeypatch.setattr(os.path, "getmtime", interrupted_metadata)
+    open_event = next(event for event in blocks.fns.values()
+                      if getattr(event.fn, "__name__", None) == "on_open_working_directory")
+    result = open_event.fn("experiment")
+    message = next(value for component, value in result.items() if isinstance(component, gr.HTML))
+    assert is_ok(message), message
+    saved = next(component for component in result if getattr(component, "label", None) == "Saved model")
+    assert result[saved]["choices"] == ["MODEL_test_0/model.joblib"]
+    assert result[saved]["value"] == "MODEL_test_0/model.joblib"
+    contents = next(value for component, value in result.items()
+                    if getattr(component, "label", None) == "Contents in Working Directory")
+    assert "MODEL_test_0" in set(contents["Name"])
+    assert unreadable.name not in set(contents["Name"])
+
+
+@pytest.mark.parametrize("module", MODULES, ids=lambda module: module.__name__)
 def test_prediction_upload_and_extraction_preserve_model_unless_training_artifacts_change(module, tmp_path, monkeypatch):
     monkeypatch.setattr(module, "DATA_DIR", str(tmp_path))
     blocks = build(module)

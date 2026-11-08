@@ -2,13 +2,17 @@
 
 from copy import deepcopy
 import json
+import ntpath
+import os
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 import torch
 
+import run_utils
 from run_utils import (
     ensure_run_directory, ensure_split_directory, list_saved_models, make_run_context,
     make_split_context, read_run_context_for_file, rebase_run_context, resolve_saved_model,
@@ -123,6 +127,26 @@ def test_saved_model_discovery_only_uses_model_directories(tmp_path, suffix):
     for relative in [f"old_run/weights{suffix}", f"FP_features/weights{suffix}"]:
         with pytest.raises(ValueError, match="MODEL_"):
             resolve_saved_model(str(tmp_path), relative, suffix)
+
+
+@pytest.mark.parametrize("suffix", [".ckpt", ".joblib"])
+def test_saved_model_choices_resolve_on_windows(monkeypatch, suffix):
+    root = r"C:\data\experiment"
+    folder = ntpath.join(root, "MODEL_run_7")
+    saved_path = ntpath.join(folder, f"weights{suffix}")
+    directories = {root: ["MODEL_run_7"], folder: [f"weights{suffix}"]}
+    # Simulate Windows paths without requiring a Windows filesystem or altering
+    # the global os module used by pytest and other application modules.
+    windows_path = SimpleNamespace(**vars(ntpath))
+    windows_path.isdir = lambda path: path in directories
+    windows_path.isfile = lambda path: path == saved_path
+    windows_path.islink = lambda path: False
+    monkeypatch.setattr(run_utils, "os", SimpleNamespace(
+        path=windows_path, listdir=lambda path: directories[path], fspath=os.fspath))
+
+    choices = list_saved_models(root, suffix)
+    assert choices == [f"MODEL_run_7/weights{suffix}"]
+    assert resolve_saved_model(root, choices[0], suffix) == saved_path
 
 
 @pytest.mark.parametrize("name", ["../file.ckpt", "/tmp/file.ckpt", "folder/../file.ckpt", "folder\\file.ckpt"])

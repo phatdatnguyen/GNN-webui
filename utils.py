@@ -213,6 +213,39 @@ def ensure_model_on_device(model, device):
         raise ValueError(f"The model is on '{model_device.type}' but the Device setting is "
                          f"'{device}'. Re-create the model to move it to '{device}'.")
 
+
+def prediction_target_names(model, dataset, output_width):
+    """Label predictions from the saved model, even when another dataset is open.
+
+    Legacy models have no captured target names, so retain their dataset-based
+    labels. Invalid recorded names must fail instead of silently changing meaning.
+    """
+    if (isinstance(output_width, (bool, np.bool_))
+            or not isinstance(output_width, (int, np.integer)) or output_width <= 0):
+        raise ValueError("Model predictions must contain at least one output column.")
+    context = getattr(model, "_run_context", None)
+    if context is not None and not isinstance(context, dict):
+        raise ValueError("Model run metadata contains invalid target names.")
+    parameters = context.get("parameters", {}) if context is not None else {}
+    if not isinstance(parameters, dict):
+        raise ValueError("Model run metadata contains invalid target names.")
+    if "target_names" in parameters:
+        names = parameters["target_names"]
+    else:
+        names = getattr(dataset, "target_column_names", None)
+        if names is None:
+            names = [getattr(dataset, "target_column_name", None) or "target"]
+    if (not isinstance(names, (list, tuple)) or not names
+            or any(not isinstance(name, str) or not name.strip() for name in names)):
+        raise ValueError("Model target names must be nonempty strings. Please load valid target metadata.")
+    if len(set(names)) != len(names):
+        raise ValueError("Model target names must be unique.")
+    if len(names) != output_width:
+        raise ValueError(f"Model target metadata contains {len(names)} name(s), but predictions "
+                         f"have {output_width} output column(s). Please check the model and checkpoint.")
+    return list(names)
+
+
 def load_model_checkpoint(model, checkpoint_file_path, validate_checkpoint=None):
     """Validate checkpoint compatibility before changing any current model weights."""
     # Loading onto CPU also permits opening CUDA checkpoints on machines without CUDA.

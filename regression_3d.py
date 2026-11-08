@@ -12,7 +12,7 @@ from evaluation_metrics import metrics_from_predictions
 from matplotlib import pyplot as plt
 from datasets import MolecularDataset3D
 from ui_utils import bind_data_processing, bind_result_invalidation, dataset_cleanup_controls
-from gnn_run_ui import attach_model_run, capture_split_outputs, route_model_export, bind_working_directory, load_run_checkpoint, ensure_model_split, directory_reset_updates, show_model_run, capture_feature_sources, bind_artifact_update
+from gnn_run_ui import attach_model_run, capture_split_outputs, route_model_export, bind_working_directory, load_run_checkpoint, ensure_model_split, directory_reset_updates, show_model_run, capture_feature_sources, bind_artifact_update, bind_checkpoint_save, reset_checkpoint_optimizer, loss_epoch_numbers
 from run_utils import make_split_context, ensure_run_directory, list_saved_models, resolve_saved_model, validate_seed
 from similarity_ui import build_similarity_controls, bind_similarity_controls
 from models import *
@@ -28,20 +28,23 @@ def get_working_directory_contents(working_directory_path):
     # repo root in the file browser after a failed "open working directory".
     if not working_directory_path:
         return []
-    return [f for f in os.listdir(working_directory_path)]
+    try:
+        return os.listdir(working_directory_path)
+    except OSError:
+        return []
 
 def on_open_working_directory(working_directory_name):
     try:
         working_directory_name = sanitize_path_component(working_directory_name, "working directory name")
-    except ValueError as exc:
+        working_directory_path = os.path.join(DATA_DIR, "Regression", working_directory_name)
+        os.makedirs(working_directory_path, exist_ok=True)
+        files = get_working_directory_contents(working_directory_path)
+        choices = get_working_directories()
+    except (ValueError, OSError) as exc:
         gr.Warning(str(exc))
         return None, gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), None, None
 
-    working_directory_path = os.path.join(DATA_DIR, "Regression", working_directory_name)
-    os.makedirs(working_directory_path, exist_ok=True)
-    files = get_working_directory_contents(working_directory_path)
-    
-    return gr.update(choices=get_working_directories(), value=working_directory_name), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), working_directory_path, files
+    return gr.update(choices=choices, value=working_directory_name), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), working_directory_path, files
 
 def on_content_list_change(working_directory_path, dataset_file_name, graph_directory, checkpoint_file_name):
     if not working_directory_path:
@@ -62,20 +65,31 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
             file_type = "Data file"
         else:
             file_type = "Other file"
-        modified_timestamp = os.path.getmtime(content_path)
+        try:
+            modified_timestamp = os.path.getmtime(content_path)
+        except OSError:
+            # Entries may disappear between listing and stat, including broken links.
+            continue
         contents_info.append([content, file_type, time.ctime(modified_timestamp), modified_timestamp])
     # Sort on the numeric timestamp: the ctime string sorts by weekday name, not by date.
     contents_info.sort(key=lambda x: x[3], reverse=True)
     contents_df = pd.DataFrame([row[:3] for row in contents_info], columns=["File", "Type", "Modified"])
 
     # Filter files
-    data_files = [f for f in contents if f.endswith('.csv')]
-    directories = list_feature_directories(working_directory_path, "graph")
+    data_files = sorted(f for f in contents if f.endswith('.csv')
+                        and os.path.isfile(os.path.join(working_directory_path, f)))
+    try:
+        directories = list_feature_directories(working_directory_path, "graph")
+    except OSError:
+        directories = []
     try:
         graph_directory = prefixed_feature_directory(graph_directory, "graph")
     except ValueError:
         graph_directory = None
-    checkpoint_files = list_saved_models(working_directory_path, ".ckpt")
+    try:
+        checkpoint_files = list_saved_models(working_directory_path, ".ckpt")
+    except OSError:
+        checkpoint_files = []
 
     # Update the file dropdown choices and value
     if f"{dataset_file_name}.csv" in data_files:
@@ -428,7 +442,9 @@ def validation(model, dataloader, device, datatype, output_scaler):
     return math.sqrt(total_loss / num_samples) if num_samples > 0 else 0.0
 
 def on_train(model, train_dataloader, val_dataloader, device, datatype, output_scaler, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, progress=gr.Progress()):
+    loss_epochs = None
     try:
+        loss_epochs = list(loss_epoch_numbers(train_losses, val_losses, trained_epochs))
         ensure_optimizer_matches_model(model, optimizer)
         ensure_model_on_device(model, device)
         ensure_model_split(model, train_dataloader)
@@ -445,6 +461,7 @@ def on_train(model, train_dataloader, val_dataloader, device, datatype, output_s
             train_losses.append(train_loss)
             val_losses.append(val_loss)
             trained_epochs += 1
+            loss_epochs.append(trained_epochs)
             scheduler.step()
 
         status = f"<span style='color: green;'>Training completed for {trained_epochs} epochs.</span>"
@@ -453,23 +470,23 @@ def on_train(model, train_dataloader, val_dataloader, device, datatype, output_s
 
     # Plot whatever was completed, so a mid-run failure does not discard finished epochs.
     figure = plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Train loss')
-    plt.plot(val_losses, label='Validation loss')
+    plt.plot(loss_epochs or [], train_losses if loss_epochs is not None else [], label='Train loss')
+    plt.plot(loss_epochs or [], val_losses if loss_epochs is not None else [], label='Validation loss')
     plt.xlabel('Epoch')
     plt.ylabel('RMSE loss (scaled targets)')
     plt.legend()
     plt.grid(True)
     plt.close(figure)
 
-    export_losses_button = gr.Button(value="Export", interactive=bool(train_losses))
+    export_losses_button = gr.Button(value="Export", interactive=bool(train_losses) and loss_epochs is not None)
 
     return status, figure, export_losses_button, trained_epochs, train_losses, val_losses
 
-def on_export_losses(working_directory_path, file_name, train_losses, val_losses):
+def on_export_losses(working_directory_path, file_name, train_losses, val_losses, trained_epochs=None):
     try:
         if not train_losses:
             raise ValueError("Please train the model first.")
-        df = pd.DataFrame({"epoch": range(len(train_losses)), "train_losses": train_losses, "val_losses": val_losses})
+        df = pd.DataFrame({"epoch": loss_epoch_numbers(train_losses, val_losses, trained_epochs), "train_losses": train_losses, "val_losses": val_losses})
         filename = export_result_csv(working_directory_path, file_name, df)
         status = f"Losses exported to {filename}."
         return f"<span style='color: green;'>{html.escape(status)}</span>", get_working_directory_contents(working_directory_path)
@@ -626,11 +643,13 @@ def on_predict(model, dataset, predict_dataloader, device, datatype, output_scal
         smiles_list, y_pred = predict(model, predict_dataloader, device, datatype, output_scaler)
         if len(smiles_list) == 0:
             raise ValueError("The prediction dataset is empty.")
+        if y_pred.ndim not in (1, 2) or (y_pred.ndim == 2 and y_pred.shape[1] != 1) or y_pred.shape[0] != len(smiles_list):
+            raise ValueError("Unexpected prediction shape for a single-target 3D model.")
         y_pred_np = y_pred.ravel()
 
         prediction_df = pd.DataFrame()
         prediction_df['SMILES'] = smiles_list
-        target_column = dataset.target_column_name if dataset is not None and dataset.target_column_name else 'target'
+        target_column = prediction_target_names(model, dataset, 1)[0]
         prediction_df[f"{target_column} (Prediction)"] = y_pred_np.tolist()
 
         status = f"Prediction completed."
@@ -838,16 +857,21 @@ def regression_3d_tab_content():
         clear_components=[run_directory_textbox, dataset_preview_dataframe, training_plot, evaluation_metrics_dataframe, evaluation_plot,
                           prediction_dataframe], similarity_controls=similarity_controls,
     )
+    directory_refresh_inputs = [working_directory_path_state, dataset_name_textbox, graph_directory_textbox, checkpoint_file_dropdown]
+    directory_refresh_outputs = [working_directory_content_list_dataframe,
+                                 dataset_file_feature_extraction_dropdown, graph_directory_dropdown, dataset_file_process_data_dropdown, checkpoint_file_dropdown, prediction_dataset_file_dropdown, prediction_graph_directory_dropdown]
+    directory_refresh = dict(refresh_callback=on_content_list_change,
+                             refresh_inputs=directory_refresh_inputs[1:],
+                             refresh_outputs=directory_refresh_outputs, path_output=working_directory_path_state)
     bind_working_directory(working_directory_dropdown, "change", on_open_working_directory, working_directory_dropdown,
                            [working_directory_dropdown, upload_dataset_button, extract_graphs_button, process_data_button, working_directory_path_state, working_directory_content_list_state],
-                           reset_updates=directory_resets, concurrency_id=concurrency_id)
+                           reset_updates=directory_resets, concurrency_id=concurrency_id, **directory_refresh)
     bind_working_directory(open_working_directory_button, "click", on_open_working_directory, working_directory_dropdown,
                            [working_directory_dropdown, upload_dataset_button, extract_graphs_button, process_data_button, working_directory_path_state, working_directory_content_list_state],
-                           reset_updates=directory_resets, concurrency_id=concurrency_id)
+                           reset_updates=directory_resets, concurrency_id=concurrency_id, **directory_refresh)
     bind_similarity_controls(similarity_controls, split_context_state, status_html, concurrency_id=concurrency_id)
-    working_directory_content_list_state.change(on_content_list_change, [working_directory_path_state, dataset_name_textbox, graph_directory_textbox, checkpoint_name_textbox],
-                                                [working_directory_content_list_dataframe,
-                                                 dataset_file_feature_extraction_dropdown, graph_directory_dropdown, dataset_file_process_data_dropdown, checkpoint_file_dropdown, prediction_dataset_file_dropdown, prediction_graph_directory_dropdown])
+    working_directory_content_list_state.change(on_content_list_change, directory_refresh_inputs,
+                                                directory_refresh_outputs, concurrency_id=concurrency_id)
     
     # Settings interaction
     datatype_dropdown.change(on_datatype_change, datatype_dropdown, datatype_state)
@@ -886,16 +910,16 @@ def regression_3d_tab_content():
                                                 dimenetplusplus_n_hiddens, dimenetplusplus_n_blocks, dimenetplusplus_int_emb_size, dimenetplusplus_basis_emb_size, dimenetplusplus_out_emb_channels, dimenetplusplus_n_spherical, dimenetplusplus_n_radial, dimenetplusplus_cutoff, dimenetplusplus_max_num_neighbors, dimenetplusplus_envelope_exponent, dimenetplusplus_n_output_layers,
                                                 visnet_n_hiddens, visnet_n_heads, visnet_n_layers, visnet_num_rbf, visnet_trainable_rbf, visnet_max_z, visnet_cutoff, visnet_max_num_neighbors, visnet_vertex, model_name_textbox],
                                                 [status_html, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state, run_directory_textbox], **result_reset)
-    save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, output_scaler_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
-    bind_result_invalidation(load_checkpoint_button, show_model_run(on_load_checkpoint, 1, restore_controls=True), [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, output_scaler_state],
-                                 [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, output_scaler_state, run_directory_textbox, model_name_textbox, model_random_seed_slider], **result_reset)
+    bind_checkpoint_save(save_checkpoint_button, on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, output_scaler_state], [status_html, working_directory_content_list_state], checkpoint_file_dropdown, concurrency_id=concurrency_id)
+    bind_result_invalidation(load_checkpoint_button, reset_checkpoint_optimizer(show_model_run(on_load_checkpoint, 1, restore_controls=True)), [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, output_scaler_state, optimizer_state, schedular_state],
+                                 [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, output_scaler_state, run_directory_textbox, model_name_textbox, model_random_seed_slider, optimizer_state, schedular_state, train_button, training_plot, export_losses_button], **result_reset)
     
     # Train model interactions
     create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [status_html, optimizer_state, schedular_state, train_button], concurrency_id=concurrency_id)
     bind_result_invalidation(train_button, on_train, [model_state, train_dataloader_state, val_dataloader_state, device_dropdown, datatype_state, output_scaler_state,
                                   optimizer_state, schedular_state, epochs_slider, trained_epochs_state, train_losses_state, val_losses_state],
                                  [status_html, training_plot, export_losses_button, trained_epochs_state, train_losses_state, val_losses_state], **result_reset)
-    export_losses_button.click(route_model_export(on_export_losses), [working_directory_path_state, loss_file_name_textbox, train_losses_state, val_losses_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
+    export_losses_button.click(route_model_export(on_export_losses), [working_directory_path_state, loss_file_name_textbox, train_losses_state, val_losses_state, trained_epochs_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
     
     # Evaluate model interactions
     evaluate_button.click(on_evaluate, [model_state, dataset_state, test_dataloader_state, device_dropdown, datatype_state, output_scaler_state],

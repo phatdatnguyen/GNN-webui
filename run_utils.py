@@ -237,7 +237,9 @@ def list_saved_models(working_directory, suffix):
             for filename in sorted(os.listdir(path)):
                 model_path = os.path.join(path, filename)
                 if filename.endswith(suffix) and os.path.isfile(model_path) and not os.path.islink(model_path):
-                    paths.append(os.path.join(name, filename))
+                    # Dropdown values are portable relative identifiers. The resolver
+                    # deliberately accepts '/' only, including on Windows hosts.
+                    paths.append(f"{name}/{filename}")
     return paths
 
 

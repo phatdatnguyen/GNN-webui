@@ -40,6 +40,67 @@ class _DigestWriter:
         return len(value)
 
 
+def _read_fingerprint_configuration(fingerprint_directory):
+    configuration = None
+    config_path = os.path.join(fingerprint_directory, FINGERPRINT_CONFIG)
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, encoding="utf-8") as stream:
+                configuration = json.load(stream)
+            if not isinstance(configuration, dict):
+                raise ValueError("Fingerprint configuration must be an object.")
+        except (OSError, ValueError) as exc:
+            raise ValueError("Cannot read fingerprint configuration. Please re-extract molecular fingerprints.") from exc
+    try:
+        json.dumps(configuration, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Fingerprint configuration contains invalid values. Please re-extract molecular fingerprints.") from exc
+    return configuration
+
+
+def capture_prediction_features(dataset, fingerprint_directory):
+    """Capture extraction settings without equating new molecules with training rows."""
+    dataset.feature_sources = {
+        "fingerprint_config": (_read_fingerprint_configuration(fingerprint_directory)
+                               if fingerprint_directory is not None else None),
+    }
+
+
+def ensure_prediction_features(model, prediction_dataset):
+    """Reject incompatible inputs before evaluating a named hybrid model."""
+    context = getattr(model, "_run_context", None)
+    if context is None:
+        return
+    if not isinstance(context, dict) or not isinstance(context.get("parameters", {}), dict):
+        raise ValueError("The model contains invalid feature metadata. Please reload a valid checkpoint.")
+    parameters = context.get("parameters", {})
+    recorded_mode = parameters.get("load_data")
+    if recorded_mode is not None and recorded_mode != getattr(prediction_dataset, "load_data", None):
+        raise ValueError("Prediction input mode differs from this model's graph/fingerprint inputs. "
+                         "Please process prediction data with the original input mode.")
+    if recorded_mode == "Graphs":
+        return
+    recorded_sources = parameters.get("feature_sources", {})
+    if not isinstance(recorded_sources, dict):
+        raise ValueError("The model contains invalid fingerprint metadata. Please reload a valid checkpoint.")
+    recorded_config = recorded_sources.get("fingerprint_config")
+    # Older models/extractions did not retain these settings. Their compatibility
+    # remains governed by the existing model input shape checks.
+    if recorded_config is None:
+        return
+    if not isinstance(recorded_config, dict):
+        raise ValueError("The model contains invalid fingerprint metadata. Please reload a valid checkpoint.")
+    prediction_sources = getattr(prediction_dataset, "feature_sources", {})
+    prediction_config = (prediction_sources.get("fingerprint_config")
+                         if isinstance(prediction_sources, dict) else None)
+    if prediction_config is None:
+        raise ValueError("Prediction fingerprints have no extraction metadata. Please re-extract molecular "
+                         "fingerprints with this model's original type, radius and bit count.")
+    if prediction_config != recorded_config:
+        raise ValueError("Prediction fingerprint settings differ from this model's training fingerprints. "
+                         "Please re-extract molecular fingerprints with the same type, radius and bit count.")
+
+
 def capture_feature_sources(graph_directory=None, fingerprint_directory=None, fingerprint_df=None):
     """Return portable directory names and content hashes for the features actually loaded.
 
@@ -74,20 +135,8 @@ def capture_feature_sources(graph_directory=None, fingerprint_directory=None, fi
         if (not isinstance(fingerprint_df, pd.DataFrame) or fingerprint_df.empty
                 or "SMILES" not in fingerprint_df or not fingerprint_df.columns.is_unique):
             raise ValueError("Please load a nonempty fingerprint table with unique columns before processing.")
-        configuration = None
-        config_path = os.path.join(fingerprint_directory, FINGERPRINT_CONFIG)
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, encoding="utf-8") as stream:
-                    configuration = json.load(stream)
-                if not isinstance(configuration, dict):
-                    raise ValueError("Fingerprint configuration must be an object.")
-            except (OSError, ValueError) as exc:
-                raise ValueError("Cannot read fingerprint configuration. Please re-extract molecular fingerprints.") from exc
-        try:
-            config_text = json.dumps(configuration, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Fingerprint configuration contains invalid values. Please re-extract molecular fingerprints.") from exc
+        configuration = _read_fingerprint_configuration(fingerprint_directory)
+        config_text = json.dumps(configuration, sort_keys=True, separators=(",", ":"), allow_nan=False)
         fingerprint_digest = hashlib.sha256(b"gnn-fingerprint-features-v1\n")
         fingerprint_df.to_csv(_DigestWriter(fingerprint_digest), index=False, lineterminator="\n", chunksize=256)
         fingerprint_digest.update(b"\nconfiguration\n")

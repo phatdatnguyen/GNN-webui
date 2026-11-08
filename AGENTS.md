@@ -121,6 +121,14 @@ serializes actions affecting a tab's run. Processing or changing working directo
 clears similarity as well as models/results; model creation/loading/training retains
 similarity. `similarity_ui` builds and binds the common controls for all six tabs.
 
+Opening a directory and saving a checkpoint refresh checkpoint selectors in the same
+callback response. Do not rely solely on the root contents `gr.State.change`: a new
+file inside an existing `MODEL_` folder leaves that state's value unchanged. Successful
+saves select their new file; general refreshes preserve the selected checkpoint.
+Checkpoint dropdown identifiers always use `/`, including on Windows, to match the
+safe path resolver. `tests/test_checkpoint_refresh_api.py` exercises repeated saves,
+reopening, and switching directories with identical root names through Gradio.
+
 Two pieces of state are bound to a specific model object and go stale if it is replaced:
 
 - **The optimizer captures `model.parameters()` when it is created.** Train with an
@@ -284,6 +292,22 @@ against a different split. Legacy GNN imports into a named run record
 Legacy classical imports use their saved estimator seed and require a matching processed
 training identity to adopt a named run for save/export. Predictions remain available
 without adopting a run.
+
+Successful GNN checkpoint loads discard optimizer/scheduler state and disable Train
+until a fresh optimizer is created, clear the old loss plot, and disable loss export.
+Failed loads preserve those objects. Loss plots and exports use 1-based cumulative
+epoch numbers, including when the current history begins after a loaded checkpoint.
+`on_export_losses` accepts an optional completed epoch count; the UI supplies it,
+while direct callers without it number the provided history from 1. Prediction
+column labels come from captured model target names when present, with the existing
+dataset fallback for legacy models. Invalid target metadata or output shapes must
+report an error rather than silently relabel predictions.
+
+Hybrid prediction processing captures fingerprint configuration separately from
+training content identities. Before inference, compare its input mode and available
+fingerprint settings with the loaded run; do not compare row/content hashes, because
+prediction accepts new molecules. Known saved settings require matching prediction
+metadata; legacy models without recorded settings retain input-shape checks.
 
 ## Tests
 

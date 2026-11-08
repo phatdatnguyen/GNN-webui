@@ -32,6 +32,7 @@ def test_classical_session_process_fit_save_reload_predict(tmp_path, request, mo
     session = SessionState(blocks)
     values = {component._id: getattr(component, "value", None)
               for component in blocks.blocks.values()}
+    choices = {}
     plot_components = [component for component in blocks.blocks.values()
                        if isinstance(component, gr.Plot)
                        and component.label in {"Confusion matrix", "ROC curve", "Actual vs. predicted"}]
@@ -71,6 +72,9 @@ def test_classical_session_process_fit_save_reload_predict(tmp_path, request, mo
             if isinstance(output, dict) and output.get("__type__") == "update":
                 if "value" in output:
                     values[component._id] = output["value"]
+                if "choices" in output:
+                    choices[component._id] = [choice[1] if isinstance(choice, (tuple, list)) else choice
+                                              for choice in output["choices"]]
             else:
                 values[component._id] = output
             if isinstance(component, gr.HTML) and isinstance(output, str):
@@ -127,11 +131,19 @@ def test_classical_session_process_fit_save_reload_predict(tmp_path, request, mo
         original_predictions = session[prediction_state._id].copy()
         await call("on_export", {1: "predictions.csv"}, export_label="Prediction export file")
         pd.testing.assert_frame_equal(pd.read_csv(run_directory / "predictions.csv"), original_predictions)
-        await call("on_save_model", {1: "round_trip"})
+        save = await call("on_save_model", {1: "round_trip"})
         assert (run_directory / "round_trip.joblib").is_file()
-        await call("refresh_directory")
-        relative_model = str((run_directory / "round_trip.joblib").relative_to(workdir))
-        assert relative_model in run_utils.list_saved_models(str(workdir), ".joblib")
+        relative_model = (run_directory / "round_trip.joblib").relative_to(workdir).as_posix()
+        saved_model = save.inputs[-1]
+        assert saved_model in save.outputs
+        assert choices[saved_model._id] == [relative_model]
+        assert values[saved_model._id] == relative_model
+        # A second save must select its own file even when an older file is selected.
+        await call("on_save_model", {1: "another_run.joblib"})
+        second_model = (run_directory / "another_run.joblib").relative_to(workdir).as_posix()
+        assert choices[saved_model._id] == sorted([relative_model, second_model])
+        assert values[saved_model._id] == second_model
+        assert not (run_directory / "another_run.joblib.joblib").exists()
         await call("on_load_model", {1: relative_model})
         assert session[model_state._id].run_context == captured_run
         assert values[fit.inputs[2]._id] == 17 and values[fit.inputs[4]._id] == "named_run"
@@ -148,5 +160,11 @@ def test_classical_session_process_fit_save_reload_predict(tmp_path, request, mo
         assert session[model_state._id] is None
         assert session[analysis_state._id] is None
         assert all(values[component._id] is None for component in plot_components)
+        # Reopening discovers saved models directly, including after visiting an empty directory.
+        await call("on_open_working_directory", {0: "empty"})
+        assert choices[saved_model._id] == [] and values[saved_model._id] is None
+        await call("on_open_working_directory", {0: "run"})
+        assert choices[saved_model._id] == sorted([relative_model, second_model])
+        assert values[saved_model._id] in {relative_model, second_model}
 
     asyncio.run(run())

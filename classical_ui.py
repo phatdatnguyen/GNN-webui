@@ -373,8 +373,15 @@ def build_classical_tab(workflow, title):
             csvs = [name for name in files if name.endswith(".csv")]
             models = run_utils.list_saved_models(path, ".joblib") if path and os.path.isdir(path) else []
             fps = utils.list_feature_directories(path, "fingerprint")
-            rows = [[name, "Directory" if os.path.isdir(os.path.join(path, name)) else "File",
-                     time.ctime(os.path.getmtime(os.path.join(path, name)))] for name in sorted(names)]
+            rows = []
+            for name in sorted(names):
+                entry = os.path.join(path, name)
+                try:
+                    modified = time.ctime(os.path.getmtime(entry))
+                except OSError:
+                    # A broken link or a file removed during refresh must not hide saved models.
+                    continue
+                rows.append([name, "Directory" if os.path.isdir(entry) else "File", modified])
             updates = {contents: pd.DataFrame(rows, columns=["Name", "Type", "Modified"])}
             for component, choices, old in zip(selection_components, [csvs, csvs, fps, csvs, fps, models], selected):
                 updates[component] = gr.update(choices=choices, value=old if old in choices else (choices[0] if choices else None))
@@ -388,12 +395,18 @@ def build_classical_tab(workflow, title):
     def on_open_working_directory(name):
         message, path = workflow.on_open_working_directory(name)
         updates = reset()
-        updates.update(refresh_directory(path, *([None] * len(selection_components))))
-        updates.update({status_html: message, path_state: path,
+        refreshed = refresh_directory(path, *([None] * len(selection_components)))
+        if status_html in refreshed:
+            # Do not leave choices from the previous directory active when listing fails.
+            updates[contents] = pd.DataFrame(columns=["Name", "Type", "Modified"])
+            updates.update({component: gr.update(choices=[], value=None)
+                            for component in selection_components})
+        updates.update(refreshed)
+        updates.update({status_html: refreshed.get(status_html, message), path_state: path,
                         directory: (gr.update(choices=workflow.get_working_directories(), value=os.path.basename(path))
                                     if path else gr.update(value=None)),
                         preview: gr.update(value=None)})
-        updates.update({button: gr.update(interactive=path is not None)
+        updates.update({button: gr.update(interactive=path is not None and status_html not in refreshed)
                         for button in (upload_button, extract_button, process_button, load_button)})
         return updates
 
@@ -538,8 +551,22 @@ def build_classical_tab(workflow, title):
 
     load_button.click(on_load_model, [path_state, saved_model, model_state, processed_state, run_name],
                       [status_html, *reset(clear_processed=False), run_name, model_seed], concurrency_id=concurrency_id)
-    save_button.click(workflow.on_save_model, [path_state, save_name, model_state], status_html, concurrency_id=concurrency_id).then(
-        refresh_directory, [path_state, *selection_components], refresh_outputs, concurrency_id=concurrency_id)
+
+    def on_save_model(path, name, fitted, *selected):
+        message = workflow.on_save_model(path, name, fitted)
+        updates = {status_html: message}
+        if succeeded(message):
+            name = utils.sanitize_path_component(name, "model file name")
+            filename = name if name.endswith(".joblib") else f"{name}.joblib"
+            relative = f"{os.path.basename(run_utils.run_directory(fitted.run_context))}/{filename}"
+            selections = list(selected) if selected else [None] * len(selection_components)
+            selections[-1] = relative
+            # Return the saved file and its refreshed choices in the save response itself.
+            updates.update(refresh_directory(path, *selections))
+        return updates
+
+    save_button.click(on_save_model, [path_state, save_name, model_state, *selection_components],
+                      refresh_outputs, concurrency_id=concurrency_id)
     for button, name, state in zip(export_buttons, [test_name, evaluation_name, prediction_name], result_states):
         button.click(workflow.on_export, [path_state, name, state, model_state], status_html, concurrency_id=concurrency_id).then(
             refresh_directory, [path_state, *selection_components], refresh_outputs, concurrency_id=concurrency_id)
