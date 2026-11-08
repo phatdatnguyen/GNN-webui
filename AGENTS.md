@@ -106,6 +106,21 @@ can discard the old model or update some weights before reporting failure. These
 wrappers append UI outputs while preserving direct handler APIs; avoid assuming
 the original model/history states are the final outputs of the wrapped callback.
 
+Split and model seeds are independent. `run_utils.make_split_context` captures the
+processed dataset hash, SMILES, row assignments, method, and data seed. GNN datasets
+carry `split_context`; classical `ProcessedData` does too. `make_run_context` captures
+the model name, model seed, workflow, parameters, and split. GNN models use
+`_run_context`; classical `FittedModel` uses `run_context`. Export paths must use
+these snapshots, never live name/seed controls. Data seeds also seed randomized PCA
+and GNN loader generators; model seeds initialize models/estimators.
+
+`gnn_run_ui` wraps GNN processing, model actions, exports, and working-directory
+changes while preserving direct handler APIs. Its extra outputs include split state,
+similarity resets, and the read-only run-directory display. The shared concurrency ID
+serializes actions affecting a tab's run. Processing or changing working directories
+clears similarity as well as models/results; model creation/loading/training retains
+similarity. `similarity_ui` builds and binds the common controls for all six tabs.
+
 Two pieces of state are bound to a specific model object and go stale if it is replaced:
 
 - **The optimizer captures `model.parameters()` when it is created.** Train with an
@@ -124,14 +139,70 @@ agreement. It catches its own exceptions and still returns a plot of the complet
 
 ### On-disk layout and the row-alignment invariant
 
+`utils.process_dataset_file` handles dataset import for all six tabs. Its optional
+`canonicalize_smiles`, `remove_duplicates`, and `remove_salt` arguments default to
+`True`; the existing sixth positional `is_3d_dataset` argument is retained. The
+checkboxes come from `ui_utils.dataset_cleanup_controls` in one row above **Load dataset**.
+Salt removal precedes deduplication; canonical isomeric molecule identity determines
+duplicates even when canonical output is disabled. Keep the first row and its target
+values. Status counts partition the source rows into imported and removed molecules;
+salt fragments and rewritten SMILES are not removed rows. All-invalid imports preserve
+the existing dataset. Extraction/scaffold salt handling is independent of these
+import-only options. Tests in `tests/test_dataset_upload.py` exercise all six upload
+callbacks through Gradio, including checkbox defaults and error paths.
+
 ```
 Data/{Classification,Regression}/<working_dir>/
   <dataset>.csv                      SMILES column + target column(s)
-  <graph_dir>/<i>.pt                 one torch-saved PyG Data per row
-  <graph_dir>/smiles.txt             manifest: the SMILES each graph was built from, in order
-  <fp_dir>/molecular_fingerprints.csv   SMILES + Bit_1..Bit_N, one row per row
-  <checkpoint>_<epochs>.ckpt
+  GRAPH_<graph_dir>/<i>.pt           one torch-saved PyG Data per row
+  GRAPH_<graph_dir>/smiles.txt       manifest: the SMILES each graph was built from, in order
+  FP_<fp_dir>/molecular_fingerprints.csv   SMILES + Bit_1..Bit_N, one row per row
+  random_seed_<data_seed>/
+    split_<split_id>.json
+    <similarity_export>.csv
+    <similarity_export>.csv.metadata.json
+  MODEL_<model_name>_<model_seed>/
+    run.json
+    <checkpoint>_<epochs>.ckpt       GNN model
+    <saved_model>.joblib            classical model
+    <losses_or_metrics_or_evaluation_or_predictions>.csv
 ```
+
+Extraction adds `GRAPH_` or `FP_` to the requested feature directory name unless that
+exact prefix is already present. Training and prediction dropdowns list only usable
+directories with the matching prefix. Model folders similarly use `MODEL_` exactly
+once; the captured human model label remains unchanged. A label that already starts
+with `MODEL_` and one without it can resolve to the same directory, so the manifest
+collision check must still reject different run identities sharing that destination.
+Existing folders are not migrated or renamed.
+
+Split and model-run directories are siblings, as requested by the user. `run_utils`
+validates path components and manifests and discovers checkpoints only inside immediate
+`MODEL_` subdirectories; root-level and other unprefixed files are not dropdown choices.
+Safe root-level checkpoint paths remain supported by direct handler callers. The helpers
+reject symlink/traversal paths. Run/split IDs exclude the absolute
+working-directory root so copied runs remain portable. Saved manifests omit that root;
+loading explicitly rebases it to the selected working directory. A run folder cannot
+be reused for different split/configuration/provenance metadata. The `MODEL_` prefix
+keeps model names such as `random_seed` separate from the data-split folders. Save/export
+creates split and model-run directories; creating/fitting a model alone does not write them.
+
+GNN processing also captures feature-content identities. Fingerprint contents/settings
+and graph shards are hashed once during processing, then recorded with the model run.
+Training/evaluation checks these captured feature identities as well as the split;
+re-extracting different features into the same directory must not silently reuse an old
+run or checkpoint. Replacing an active dataset or feature source through the UI clears
+the dependent split, similarity, model, and result state. Unrelated prediction uploads
+preserve the training run.
+
+`similarity.calculate_similarity` uses captured SMILES to compute exact Morgan/Tanimoto
+training–test comparisons independently of the model's inputs or PCA. Its salt stripping,
+explicit hydrogens, and ignored chirality match fingerprint extraction. Validation rows
+are excluded. Pairwise histograms are accumulated in bounded chunks; the full pair matrix
+is never retained. Nearest neighbors follow captured test order, with ties resolved by
+the smallest original training row index. Exports contain distribution bins or per-test
+neighbors plus JSON provenance and use the captured split seed. Reprocessing invalidates
+the result; changing fingerprint controls does not relabel an already calculated result.
 
 **Row `i` of the CSV, graph `i.pt`, and fingerprint row `i` must describe the same
 molecule.** Both extractors rewrite the dataset CSV when a molecule fails, so running one
@@ -142,20 +213,30 @@ directories extracted before the manifest existed fall back to spot-checking the
 middle and last graph. `__len__` counts only files named `<int>.pt` and caches the result,
 because a `DataLoader` calls it every epoch.
 
-The training loader shuffles each epoch, seeded from the random seed so runs stay
+The training loader shuffles each epoch, seeded from the data split random seed so runs stay
 reproducible; the "Shuffle training data each epoch" checkbox turns it off for a fixed
 batch order. Validation and test loaders are always in dataset order.
 
 Names typed into the working-directory, dataset, checkpoint, graph-directory and export
 textboxes all reach `os.path.join`, and the extraction directory is passed to
 `shutil.rmtree`. Everything user-supplied goes through `utils.sanitize_path_component`,
-which rejects rather than rewrites.
+which rejects unsafe path components rather than rewriting them. The type-prefix
+helpers then add the required folder prefix exactly once.
 
 ### models.py
 
-Every model is the same shape: **GCN branch + MLP fingerprint branch → concat → predictor →
-output head.** Either branch is disabled by setting its `n_outputs` to 0 (both zero raises).
+The hybrid models have the same shape: **Graph Encoder + Fingerprint Encoder → concat →
+Prediction Head → output layer.** Either encoder is disabled by setting its `n_outputs`
+to 0 (both zero raises).
 Fingerprint-only datasets use `MLPModel` instead of a graph model.
+
+The registered PyTorch block attributes are `graph_encoder`, `fingerprint_encoder`, and
+`prediction_head`, so these names appear in `repr(model)`, `named_modules()`, and saved
+parameter keys. Algorithm class names (`GCNModel`, `MLPModel`, etc.) and constructor
+argument names (`n_gcn_*`, `n_mlp_*`, `n_predictor_*`) are retained. Keep all forward
+references synchronized with the registered attributes; do not register aliases under
+the old `gcn`, `mlp`, or `predictor` names. The rename does not alter layer order or
+tensor flow. PyG 3D models and scikit-learn estimators retain their algorithm names.
 
 Two families:
 
@@ -192,7 +273,17 @@ transformers. The transformers are part of the model's contract — a regression
 reloaded without its `output_scaler` denormalises predictions with the wrong constants and
 produces plausible but wrong numbers. Architecture is checked on load via `model_class`;
 loading into a mismatched model is refused. Older checkpoints missing these keys fall back
-to the current session state.
+to the current session state. Named checkpoints also retain `run_context`.
+Hybrid checkpoints using the old `gcn.*`, `mlp.*`, or `predictor.*` parameter keys are
+not migrated to the renamed encoder/head attributes; they fail the normal key check.
+`utils.load_model_checkpoint` accepts an optional metadata validator that runs before
+copying weights. `gnn_run_ui.load_run_checkpoint` verifies embedded and sibling run
+metadata, restores the recorded identity, and guards subsequent training/evaluation
+against a different split. Legacy GNN imports into a named run record
+`initialization_seed_verified=False`; do not claim that their original seed is known.
+Legacy classical imports use their saved estimator seed and require a matching processed
+training identity to adopt a named run for save/export. Predictions remain available
+without adopting a run.
 
 ## Tests
 

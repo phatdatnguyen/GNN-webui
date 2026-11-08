@@ -45,8 +45,8 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
     prediction_states = prediction_processing.outputs[1:3]
 
     values = dict(working_directory_path=str(split_workdir), dataset_file_name="dataset.csv",
-                  load_data="Molecular fingerprints", graph_directory="graphs",
-                  molecular_fingerprint_directory="fps", datatype=torch.float32,
+                  load_data="Molecular fingerprints", graph_directory="GRAPH_graphs",
+                  molecular_fingerprint_directory="FP_fps", datatype=torch.float32,
                   dimensionality_reduction=False, variance_threshold=0.0, pca_num_components=2,
                   test_ratio=0.25, val_ratio=0.25, batch_size=2, shuffle_training_data=False,
                   random_seed=17, split_method="Random")
@@ -54,6 +54,19 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
     previous = processing.fn(**arguments)
     assert isinstance(previous, dict)
     assert is_ok(previous[processing.outputs[0]])
+
+    calculation = callback_named(blocks, "on_calculate_similarity")
+    split_context = previous[calculation.inputs[0]]
+    assert split_context["split_seed"] == 17
+    similarity_outputs = calculation.fn(split_context, 2, 128)
+    similarity_state = next(component for component in calculation.outputs if isinstance(component, gr.State))
+    similarity = similarity_outputs[similarity_state]
+    assert similarity.nearest["Test row"].tolist() == split_context["test_indices"]
+    assert set(similarity.nearest["Training row"]) <= set(split_context["train_indices"])
+    assert similarity.distribution["Pair count"].sum() == (
+        len(split_context["train_indices"]) * len(split_context["test_indices"]))
+    # A model change must retain the comparison for the already processed split.
+    assert similarity_state not in creation.outputs
 
     # Model, history and results from a completed run on the previous Random split.
     old_model = torch.nn.Linear(1, 1)
@@ -63,6 +76,7 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
     old_states = {model_state: old_model, optimizer_state: old_optimizer,
                   scheduler_state: old_scheduler, train_losses_state: stale_train_losses,
                   val_losses_state: stale_val_losses, epoch_state: 1,
+                  similarity_state: similarity,
                   evaluation_state: pd.DataFrame({"old_prediction": [1.0]}),
                   **{component: object() for component in prediction_states}}
 
@@ -76,7 +90,7 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
     session = {**previous, **old_states, **result}
 
     for component in (model_state, optimizer_state, scheduler_state,
-                      evaluation_state, *prediction_states):
+                      evaluation_state, similarity_state, *prediction_states):
         assert session[component] is None
     assert session[train_losses_state] == session[val_losses_state] == []
     assert session[train_losses_state] is not stale_train_losses
@@ -93,7 +107,7 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
         assert result[button].get("interactive") is False
     export_buttons = [component for component in blocks.blocks.values()
                       if isinstance(component, gr.Button) and component.value.startswith("Export")]
-    assert len(export_buttons) == 4
+    assert len(export_buttons) == 6
     assert all(result[button].get("interactive") is False for button in export_buttons)
     for component in blocks.blocks.values():
         if isinstance(component, gr.Plot) or (isinstance(component, gr.Dataframe)

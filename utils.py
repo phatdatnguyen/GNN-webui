@@ -37,6 +37,37 @@ def sanitize_path_component(name, label="name"):
                          "'.', '_' or '-' - path separators are not allowed.")
     return component
 
+
+def prefixed_feature_directory(name, kind):
+    """Apply the feature category prefix once, after validating the supplied name."""
+    if kind not in ("graph", "fingerprint"):
+        raise ValueError("Feature directory kind must be graph or fingerprint.")
+    component = sanitize_path_component(name, f"{kind} directory")
+    prefix = "GRAPH_" if kind == "graph" else "FP_"
+    return component if component.startswith(prefix) else prefix + component
+
+
+def list_feature_directories(working_directory, kind):
+    """Find usable feature folders belonging to the requested category."""
+    if kind not in ("graph", "fingerprint"):
+        raise ValueError("Feature directory kind must be graph or fingerprint.")
+    if not working_directory or not os.path.isdir(working_directory):
+        return []
+    prefix = "GRAPH_" if kind == "graph" else "FP_"
+    result = []
+    for name in sorted(os.listdir(working_directory)):
+        path = os.path.join(working_directory, name)
+        if not name.startswith(prefix) or os.path.islink(path) or not os.path.isdir(path):
+            continue
+        if kind == "graph":
+            usable = bool(list_graph_files(path))
+        else:
+            fingerprint_file = os.path.join(path, "molecular_fingerprints.csv")
+            usable = os.path.isfile(fingerprint_file) and not os.path.islink(fingerprint_file)
+        if usable:
+            result.append(name)
+    return result
+
 def export_result_csv(working_directory_path, file_name, frame):
     """Write a nonempty result table inside the opened working directory."""
     if not working_directory_path or not os.path.isdir(working_directory_path):
@@ -45,7 +76,10 @@ def export_result_csv(working_directory_path, file_name, frame):
         raise ValueError("Please produce results before exporting.")
     file_name = sanitize_path_component(file_name, "export file name")
     filename = file_name if file_name.lower().endswith(".csv") else f"{file_name}.csv"
-    frame.to_csv(os.path.join(working_directory_path, filename), index=False)
+    destination = os.path.join(working_directory_path, filename)
+    if os.path.islink(destination):
+        raise ValueError("Export files cannot be symbolic links.")
+    frame.to_csv(destination, index=False)
     return filename
 
 def list_graph_files(graph_directory_path):
@@ -179,7 +213,7 @@ def ensure_model_on_device(model, device):
         raise ValueError(f"The model is on '{model_device.type}' but the Device setting is "
                          f"'{device}'. Re-create the model to move it to '{device}'.")
 
-def load_model_checkpoint(model, checkpoint_file_path):
+def load_model_checkpoint(model, checkpoint_file_path, validate_checkpoint=None):
     """Validate checkpoint compatibility before changing any current model weights."""
     # Loading onto CPU also permits opening CUDA checkpoints on machines without CUDA.
     checkpoint = torch.load(checkpoint_file_path, map_location='cpu', weights_only=False)
@@ -202,65 +236,115 @@ def load_model_checkpoint(model, checkpoint_file_path):
                 or saved_value.layout != value.layout):
             raise ValueError(f"Checkpoint parameter '{name}' does not match the current model. "
                              "Re-create the model with the original architecture first.")
+    if validate_checkpoint is not None:
+        validate_checkpoint(checkpoint)
     model.load_state_dict(saved_state)
     return checkpoint
 
-def process_dataset_file(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_column_names, is_3d_dataset=False):
+def process_dataset_file(dataset_file_path, working_directory_path, dataset_name, smiles_column,
+                         target_column_names, is_3d_dataset=False, canonicalize_smiles=True,
+                         remove_duplicates=True, remove_salt=True):
+    """Import selected columns with optional molecular cleanup, keeping first-row labels."""
+    from html import escape
+
     try:
         dataset_name = sanitize_path_component(dataset_name, "dataset name")
+        if not working_directory_path or not os.path.isdir(working_directory_path):
+            raise ValueError("Please open an existing working directory first.")
 
-        # Load the dataset and validate columns
-        df = pd.read_csv(dataset_file_path)
+        df = pd.read_csv(dataset_file_path, skip_blank_lines=False)
         if smiles_column not in df.columns:
             raise ValueError(f"SMILES column '{smiles_column}' not found in the dataset.")
-        
-        # Validate target columns
-        if target_column_names == "":
-            target_column_name_list = []
-        else:
-            target_column_name_list = [col.strip() for col in target_column_names.split(",")]
-            if is_3d_dataset and len(target_column_name_list) > 1:
-                raise ValueError(f"3D model only accept 1 target column")
-            missing_target_columns = [col for col in target_column_name_list if col not in df.columns]
-            if missing_target_columns:
-                raise ValueError(f"Target columns not found in the dataset: {', '.join(missing_target_columns)}")
-        
-        df = df[[smiles_column] + target_column_name_list] # Keep only the SMILES and target columns (if there are any target columns)
-        df = df.rename(columns={smiles_column: 'SMILES'}) # Rename the SMILES column to a standard name expected by the rest of the code
-        df = df.dropna() # Remove the rows with no data
+        if target_column_names is None:
+            target_column_names = ""
+        if not isinstance(target_column_names, str):
+            raise ValueError("Target columns must be a comma-separated list of column names.")
+        target_column_name_list = ([col.strip() for col in target_column_names.split(",")]
+                                   if target_column_names.strip() else [])
+        if any(not col for col in target_column_name_list) or len(set(target_column_name_list)) != len(target_column_name_list):
+            raise ValueError("Target column names must be nonempty and unique.")
+        if smiles_column in target_column_name_list or "SMILES" in target_column_name_list:
+            raise ValueError("The SMILES column cannot also be a target; 'SMILES' is reserved for molecular structures.")
+        if is_3d_dataset and len(target_column_name_list) > 1:
+            raise ValueError("3D models only accept 1 target column.")
+        missing_target_columns = [col for col in target_column_name_list if col not in df.columns]
+        if missing_target_columns:
+            raise ValueError(f"Target columns not found in the dataset: {', '.join(missing_target_columns)}")
 
-        # Filter out invalid SMILES and those with no carbon.
-        # Build a mask in one pass: filtering the frame per rejected row is quadratic, and
-        # dropping by value would also take out unrelated duplicates of the same SMILES.
-        salt_remover = SaltRemover.SaltRemover()
-        verdicts = {}
-        keep = []
-        for smiles in df['SMILES']:
-            if smiles not in verdicts:
-                mol_obj = Chem.MolFromSmiles(smiles)
-                if mol_obj is None:
-                    verdicts[smiles] = False
-                    print(f"Invalid SMILES '{smiles}' removed from the dataset.")
-                else:
-                    mol_obj = salt_remover.StripMol(mol_obj, dontRemoveEverything=True)
-                    carbon_count = sum(1 for atom in mol_obj.GetAtoms() if atom.GetAtomicNum() == 6)
-                    verdicts[smiles] = carbon_count > 0 and smiles != '[C]'
-                    if not verdicts[smiles]:
-                        print(f"SMILES '{smiles}' with no carbon atom removed from the dataset.")
-            keep.append(verdicts[smiles])
-        df = df.loc[keep].reset_index(drop=True)
-        if df.empty:
-            raise ValueError("No valid molecules remain after filtering the dataset.")
+        df = df[[smiles_column] + target_column_name_list].rename(columns={smiles_column: "SMILES"})
+        counts = dict(missing=0, invalid=0, noncarbon=0, duplicates=0)
+        salt_remover = SaltRemover.SaltRemover() if remove_salt else None
+        cache, seen = {}, set()
+        kept_indices, cleaned_smiles = [], []
+        for index, row in enumerate(df.itertuples(index=False, name=None)):
+            if any(pd.isna(value) or (isinstance(value, str) and not value.strip()) for value in row):
+                counts["missing"] += 1
+                continue
+            smiles = row[0]
+            if not isinstance(smiles, str):
+                counts["invalid"] += 1
+                continue
+            if smiles not in cache:
+                reason, output, identity = None, None, None
+                try:
+                    molecule = Chem.MolFromSmiles(smiles)
+                    if molecule is None:
+                        reason = "invalid"
+                    elif smiles.strip() == "[C]" or not any(atom.GetAtomicNum() == 6 for atom in molecule.GetAtoms()):
+                        reason = "noncarbon"
+                    else:
+                        original_atom_count = molecule.GetNumAtoms()
+                        if salt_remover is not None:
+                            molecule = salt_remover.StripMol(molecule, dontRemoveEverything=True)
+                        if not any(atom.GetAtomicNum() == 6 for atom in molecule.GetAtoms()):
+                            reason = "noncarbon"
+                        else:
+                            identity = Chem.MolToSmiles(molecule, canonical=True, isomericSmiles=True)
+                            if canonicalize_smiles:
+                                output = identity
+                            elif molecule.GetNumAtoms() != original_atom_count:
+                                output = Chem.MolToSmiles(molecule, canonical=False, isomericSmiles=True)
+                            else:
+                                output = smiles
+                except Exception:
+                    reason = "invalid"
+                cache[smiles] = reason, output, identity
+            reason, output, identity = cache[smiles]
+            if reason is not None:
+                counts[reason] += 1
+            elif remove_duplicates and identity in seen:
+                counts["duplicates"] += 1
+            else:
+                seen.add(identity)
+                kept_indices.append(index)
+                cleaned_smiles.append(output)
 
-        # Save the uploaded dataset to the working directory
+        cleaned = df.iloc[kept_indices].copy().reset_index(drop=True)
+        cleaned["SMILES"] = cleaned_smiles
+        summary = (f"Imported {len(cleaned)} molecules; removed {sum(counts.values())} rows "
+                   f"({counts['missing']} missing values, {counts['invalid']} invalid SMILES, "
+                   f"{counts['noncarbon']} without carbon, {counts['duplicates']} duplicates).")
+        if cleaned.empty:
+            raise ValueError(f"{summary} No valid molecules remain after filtering the dataset.")
+
+        # Publish only a complete CSV; failed serialization must preserve existing data.
         save_path = os.path.join(working_directory_path, f"{dataset_name}.csv")
-        df.to_csv(save_path, index=False)
-
-        status = f"Dataset '{dataset_name}' uploaded successfully to working directory."
-        return f"<span style='color: green;'>{status}</span>", df
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", suffix=".csv",
+                                             prefix=f".{dataset_name}-", dir=working_directory_path,
+                                             delete=False) as stream:
+                temporary_path = stream.name
+                cleaned.to_csv(stream, index=False)
+            os.replace(temporary_path, save_path)
+        finally:
+            if temporary_path is not None and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+        status = f"{summary} Saved as '{dataset_name}.csv'."
+        return f"<span style='color: green;'>{escape(status)}</span>", cleaned
     except Exception as exc:
         status = f"Error uploading dataset: {exc}"
-        return f"<span style='color: red;'>{status}</span>", None
+        return f"<span style='color: red;'>{escape(status)}</span>", None
 
 def _publish_extraction(staged_directory, output_directory, dataset_file_path, df, successful_indices):
     """Publish completed features, retaining the previous data if extraction or saving fails."""
@@ -327,7 +411,7 @@ def _publish_extraction(staged_directory, output_directory, dataset_file_path, d
 def extract_graphs(working_directory_path, dataset_file_name, graph_directory, graph_featurizer_name, datatype, progress):
     try:
         # This path is passed to shutil.rmtree below, so it must be a single safe component.
-        graph_directory = sanitize_path_component(graph_directory, "graph directory")
+        graph_directory = prefixed_feature_directory(graph_directory, "graph")
         dataset_file_name = sanitize_path_component(dataset_file_name, "dataset file name")
         dataset_file_path = os.path.join(working_directory_path, dataset_file_name)
         df = pd.read_csv(dataset_file_path)
@@ -387,7 +471,7 @@ def extract_graphs(working_directory_path, dataset_file_name, graph_directory, g
 def extract_3d_graphs(working_directory_path, dataset_file_name, graph_directory, num_conformers, force_field, datatype, progress):
     try:
         # This path is passed to shutil.rmtree below, so it must be a single safe component.
-        graph_directory = sanitize_path_component(graph_directory, "graph directory")
+        graph_directory = prefixed_feature_directory(graph_directory, "graph")
         dataset_file_name = sanitize_path_component(dataset_file_name, "dataset file name")
         dataset_file_path = os.path.join(working_directory_path, dataset_file_name)
         df = pd.read_csv(dataset_file_path)
@@ -478,7 +562,7 @@ def extract_molecule_fingerprints(working_directory_path, dataset_file_name, mol
                 raise ValueError("The Morgan radius must be a nonnegative integer.")
             radius = int(radius)
         # This path is passed to shutil.rmtree below, so it must be a single safe component.
-        molecular_fingerprint_directory = sanitize_path_component(molecular_fingerprint_directory, "molecular fingerprint directory")
+        molecular_fingerprint_directory = prefixed_feature_directory(molecular_fingerprint_directory, "fingerprint")
         dataset_file_name = sanitize_path_component(dataset_file_name, "dataset file name")
         dataset_file_path = os.path.join(working_directory_path, dataset_file_name)
         df = pd.read_csv(dataset_file_path)

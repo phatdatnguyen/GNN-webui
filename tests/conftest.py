@@ -51,10 +51,10 @@ def _build_2d_workdir(directory, targets, target_column):
     source = _write_source_csv(directory, SMILES, targets, target_column)
     status, df = utils.process_dataset_file(source, directory, "dataset", "smiles", target_column)
     assert df is not None, status
-    status = utils.extract_graphs(directory, "dataset.csv", "graphs",
+    status = utils.extract_graphs(directory, "dataset.csv", "GRAPH_graphs",
                                   "MolGraphConvFeaturizer", torch.float32, FakeProgress())
     assert "green" in status, status
-    status = utils.extract_molecule_fingerprints(directory, "dataset.csv", "fps",
+    status = utils.extract_molecule_fingerprints(directory, "dataset.csv", "FP_fps",
                                                  "Morgan fingerprint", 2, 128, FakeProgress())
     assert "green" in status, status
     return directory
@@ -76,7 +76,7 @@ def workdir_3d_template(tmp_path_factory):
     source = _write_source_csv(directory, SMILES_3D, [i % 2 for i in range(len(SMILES_3D))], "target")
     status, df = utils.process_dataset_file(source, directory, "dataset", "smiles", "target", True)
     assert df is not None, status
-    status = utils.extract_3d_graphs(directory, "dataset.csv", "g3d", 3, "MMFF",
+    status = utils.extract_3d_graphs(directory, "dataset.csv", "GRAPH_g3d", 3, "MMFF",
                                      torch.float32, FakeProgress())
     assert "green" in status, status
     return directory

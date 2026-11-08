@@ -59,6 +59,7 @@ class ProcessedData:
     test_indices: np.ndarray
     split_method: str = "Random"
     random_seed: int = 0
+    split_context: dict | None = None
 
     @property
     def task(self):
@@ -96,6 +97,7 @@ class FittedModel:
     training_identity: str
     parameters: dict
     random_seed: int
+    run_context: dict | None = None
 
 
 def _read_csv(path, description):
@@ -296,7 +298,8 @@ def _validate_model(model, task=None):
             or len(model.pipelines) != len(model.target_names)
             or not isinstance(model.training_identity, str) or len(model.training_identity) != 64
             or any(char not in "0123456789abcdef" for char in model.training_identity)
-            or not isinstance(model.parameters, dict)):
+            or not isinstance(model.parameters, dict)
+            or (getattr(model, "run_context", None) is not None and not isinstance(model.run_context, dict))):
         raise ValueError("The saved model has invalid target, feature, or training split metadata.")
     _seed(model.random_seed)
     _validate_config(model.fingerprint_config, len(model.feature_names))

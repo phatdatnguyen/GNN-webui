@@ -14,7 +14,10 @@ from sklearn.preprocessing import MinMaxScaler
 from evaluation_metrics import metrics_from_predictions
 from matplotlib import pyplot as plt
 from datasets import MolecularDataset
-from ui_utils import bind_data_processing, bind_result_invalidation
+from ui_utils import bind_data_processing, bind_result_invalidation, dataset_cleanup_controls
+from gnn_run_ui import attach_model_run, capture_split_outputs, route_model_export, bind_working_directory, load_run_checkpoint, ensure_model_split, directory_reset_updates, show_model_run, capture_feature_sources, bind_artifact_update
+from run_utils import make_split_context, ensure_run_directory, list_saved_models, resolve_saved_model, validate_seed
+from similarity_ui import build_similarity_controls, bind_similarity_controls
 from models import *
 from utils import *
 
@@ -73,8 +76,17 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
 
     # Filter files
     data_files = [f for f in contents if f.endswith('.csv')]
-    directories = [f for f in contents if os.path.isdir(os.path.join(working_directory_path, f))]
-    checkpoint_files = [f for f in contents if f.endswith('.ckpt')]
+    graph_directories = list_feature_directories(working_directory_path, "graph")
+    fingerprint_directories = list_feature_directories(working_directory_path, "fingerprint")
+    try:
+        graph_directory = prefixed_feature_directory(graph_directory, "graph")
+    except ValueError:
+        graph_directory = None
+    try:
+        molecular_fingerprint_directory = prefixed_feature_directory(molecular_fingerprint_directory, "fingerprint")
+    except ValueError:
+        molecular_fingerprint_directory = None
+    checkpoint_files = list_saved_models(working_directory_path, ".ckpt")
 
     # Update the file dropdown choices and value
     if f"{dataset_file_name}.csv" in data_files:
@@ -82,15 +94,15 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
     else:
         dataset_file_name_value = data_files[0] if data_files else None
 
-    if graph_directory in directories:
+    if graph_directory in graph_directories:
         graph_directory_value = graph_directory
     else:
-        graph_directory_value = directories[0] if directories else None
+        graph_directory_value = graph_directories[0] if graph_directories else None
 
-    if molecular_fingerprint_directory in directories:
+    if molecular_fingerprint_directory in fingerprint_directories:
         molecular_fingerprint_directory_value = molecular_fingerprint_directory
     else:
-        molecular_fingerprint_directory_value = directories[0] if directories else None
+        molecular_fingerprint_directory_value = fingerprint_directories[0] if fingerprint_directories else None
 
     if checkpoint_file_name in checkpoint_files:
         checkpoint_file_name_value = checkpoint_file_name
@@ -102,25 +114,25 @@ def on_content_list_change(working_directory_path, dataset_file_name, graph_dire
     else:
         prediction_dataset_file_name_value = data_files[0] if data_files else None
 
-    if graph_directory in directories:
+    if graph_directory in graph_directories:
         prediction_graph_directory_value = graph_directory
     else:
-        prediction_graph_directory_value = directories[0] if directories else None
+        prediction_graph_directory_value = graph_directories[0] if graph_directories else None
 
-    if molecular_fingerprint_directory in directories:
+    if molecular_fingerprint_directory in fingerprint_directories:
         prediction_molecular_fingerprint_directory_value = molecular_fingerprint_directory
     else:
-        prediction_molecular_fingerprint_directory_value = directories[0] if directories else None
+        prediction_molecular_fingerprint_directory_value = fingerprint_directories[0] if fingerprint_directories else None
 
     return contents_df, \
            gr.update(choices=data_files, value=dataset_file_name_value), \
-           gr.update(choices=directories, value=graph_directory_value), \
-           gr.update(choices=directories, value=molecular_fingerprint_directory_value), \
+           gr.update(choices=graph_directories, value=graph_directory_value), \
+           gr.update(choices=fingerprint_directories, value=molecular_fingerprint_directory_value), \
            gr.update(choices=data_files, value=dataset_file_name_value), \
            gr.update(choices=checkpoint_files, value=checkpoint_file_name_value), \
            gr.update(choices=data_files, value=prediction_dataset_file_name_value), \
-           gr.update(choices=directories, value=prediction_graph_directory_value), \
-           gr.update(choices=directories, value=prediction_molecular_fingerprint_directory_value)
+           gr.update(choices=graph_directories, value=prediction_graph_directory_value), \
+           gr.update(choices=fingerprint_directories, value=prediction_molecular_fingerprint_directory_value)
 
 def get_device_dropdown():
     if torch.cuda.is_available():
@@ -138,14 +150,21 @@ def on_datatype_change(datatype):
     else: # datatype == "bfloat16"
         return torch.bfloat16
 
-def on_upload_dataset(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_columns):
-    if dataset_file_path is None or dataset_file_path.strip() == "":
-        status = "Please select a dataset file."
-        return f"<span style='color: red;'>{status}</span>", None, get_working_directory_contents(working_directory_path)
-
-    status, df = process_dataset_file(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_columns)
-    preview = df.head(10) if df is not None else None
-    return status, preview, get_working_directory_contents(working_directory_path)
+def on_upload_dataset(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_columns,
+                      canonicalize_smiles=True, remove_duplicates=True, remove_salt=True):
+    try:
+        if not working_directory_path or not os.path.isdir(working_directory_path):
+            raise ValueError("Please open a working directory first.")
+        if dataset_file_path is None or not str(dataset_file_path).strip():
+            raise ValueError("Please select a dataset file.")
+        status, df = process_dataset_file(
+            dataset_file_path, working_directory_path, dataset_name, smiles_column, target_columns,
+            canonicalize_smiles=canonicalize_smiles, remove_duplicates=remove_duplicates, remove_salt=remove_salt)
+        if df is None:
+            return status, gr.update(), gr.update()
+        return status, df.head(10), get_working_directory_contents(working_directory_path)
+    except Exception as exc:
+        return f"<span style='color: red;'>Error uploading dataset: {escape(str(exc))}</span>", gr.update(), gr.update()
 
 def on_extract_graphs(working_directory_path, dataset_file_name, graph_directory, graph_featurizer_name, datatype, progress=gr.Progress()):
     status = extract_graphs(working_directory_path, dataset_file_name, graph_directory, graph_featurizer_name, datatype, progress)
@@ -171,6 +190,7 @@ def on_dimensionality_reduction_change(dimensionality_reduction_enabled):
 def on_process_data(working_directory_path, dataset_file_name, load_data, graph_directory, molecular_fingerprint_directory, datatype, dimensionality_reduction, variance_threshold, pca_num_components, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed, split_method="Random"):
     try:
         # Validate inputs
+        random_seed = validate_seed(random_seed)
         if load_data in ('Graphs', 'Both') and (graph_directory is None or graph_directory.strip() == ""):
             raise ValueError("Please select a graph directory.")
         if load_data in ('Molecular fingerprints', 'Both') and (molecular_fingerprint_directory is None or molecular_fingerprint_directory.strip() == ""):
@@ -200,8 +220,12 @@ def on_process_data(working_directory_path, dataset_file_name, load_data, graph_
         dataset = MolecularDataset(dataset_file_path, load_data, graph_directory_path, molecular_fingerprint_directory_path, datatype, target_datatype=torch.float64)
         
         total_len = len(dataset)
+        capture_feature_sources(dataset, graph_directory_path, molecular_fingerprint_directory_path)
         train_dataset, val_dataset, test_dataset = split_molecular_dataset(
             dataset, test_ratio, val_ratio, random_seed, split_method)
+        dataset.split_context = make_split_context(
+            working_directory_path, dataset_file_name, df, train_dataset.indices, test_dataset.indices,
+            random_seed, split_method, validation_indices=val_dataset.indices)
 
         
         # Re-shuffle the training set each epoch. The generator is seeded from the random seed
@@ -216,7 +240,7 @@ def on_process_data(working_directory_path, dataset_file_name, load_data, graph_
         # The checkbox is only hidden - not reset - when fingerprints are not loaded, so ignore it here.
         if dimensionality_reduction and load_data in ('Molecular fingerprints', 'Both'):
             variance_threshold = VarianceThreshold(variance_threshold)
-            pca = PCA(n_components=pca_num_components)
+            pca = PCA(n_components=pca_num_components, random_state=random_seed)
             fingerprint_df = pd.read_csv(os.path.join(molecular_fingerprint_directory_path, "molecular_fingerprints.csv"))
             train_fingerprints = fingerprint_df.drop(columns=['SMILES']).iloc[train_dataset.indices].values
             train_fingerprints_variance_thresholded = variance_threshold.fit_transform(train_fingerprints)
@@ -255,8 +279,9 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
                     attentivefp_n_hiddens, attentivefp_num_layers, attentivefp_num_timesteps, attentivefp_dropout, attentivefp_n_outputs,
                     customgcn_convolutional_layer_name, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_heads, customgcn_n_outputs,
                     mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                    predictor_n_hiddens, predictor_n_layers):
+                    predictor_n_hiddens, predictor_n_layers, model_name=None):
     
+    run_parameters = locals().copy()
     model = None
     train_losses = []
     val_losses = []
@@ -265,6 +290,8 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
     try:
         if dataset is None:
             raise ValueError("Please process the data first.")
+        random_seed = validate_seed(random_seed)
+        run_parameters["random_seed"] = random_seed
         # Initialize model parameters based on dataset and user selections
         if dataset.load_data == 'Graphs':
             gcn_n_inputs = dataset.num_node_features
@@ -455,6 +482,7 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
         else:
             model_summary = summary(model, x, edge_index, batch_index, fingerprint_tensor)
         
+        attach_model_run(model, dataset, model_name, random_seed, "regression_hybrid", run_parameters)
         status = "Model created successfully. Create an optimizer to start training."
         # Training is disabled until an optimizer is created for *this* model: an optimizer
         # captures the parameters it was built with, so a stale one silently updates nothing.
@@ -478,12 +506,19 @@ def on_save_checkpoint(working_directory_path, checkpoint_name, model, trained_e
         checkpoint = {
             'model_class': type(model).__name__,
             'state_dict': model.state_dict(),
+            'run_context': getattr(model, '_run_context', None),
             'trained_epochs': trained_epochs,
             'variance_threshold': variance_threshold,
             'pca': pca,
             'output_scaler': output_scaler
         }
-        checkpoint_path = os.path.join(working_directory_path, f"{checkpoint_name}_{trained_epochs}.ckpt")
+        run_context = getattr(model, '_run_context', None)
+        if run_context is not None and (not working_directory_path or os.path.realpath(working_directory_path) != os.path.realpath(run_context['working_directory'])):
+            raise ValueError("Please reopen this model's working directory before saving its checkpoint.")
+        output_directory = ensure_run_directory(run_context) if run_context is not None else working_directory_path
+        checkpoint_path = os.path.join(output_directory, f"{checkpoint_name}_{trained_epochs}.ckpt")
+        if os.path.islink(checkpoint_path):
+            raise ValueError("Checkpoint files cannot be symbolic links.")
         # The filename is derived from the epoch count, so re-saving replaces a previous file.
         replaced = os.path.exists(checkpoint_path)
         torch.save(checkpoint, checkpoint_path)
@@ -499,11 +534,10 @@ def on_load_checkpoint(working_directory_path, checkpoint_file_name, model, trai
     try:
         if model is None:
             raise ValueError("Please create a model first, so the checkpoint has an architecture to load into.")
-        checkpoint_file_name = sanitize_path_component(checkpoint_file_name, "checkpoint file name")
-        checkpoint_file_path = os.path.join(working_directory_path, checkpoint_file_name)
-        checkpoint = load_model_checkpoint(model, checkpoint_file_path)
+        checkpoint_file_path = resolve_saved_model(working_directory_path, checkpoint_file_name, ".ckpt")
+        checkpoint, run_note = load_run_checkpoint(model, checkpoint_file_path, checkpoint_file_name, working_directory_path)
 
-        status = f"Checkpoint loaded: {checkpoint_file_name}."
+        status = f"Checkpoint loaded: {checkpoint_file_name}.{run_note}"
         return f"<span style='color: green;'>{status}</span>", model, [], [], checkpoint.get('trained_epochs', 0), \
             checkpoint.get('variance_threshold', variance_threshold), checkpoint.get('pca', pca), \
             checkpoint.get('output_scaler', output_scaler)
@@ -653,6 +687,7 @@ def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype,
     try:
         ensure_optimizer_matches_model(model, optimizer)
         ensure_model_on_device(model, device)
+        ensure_model_split(model, dataset)
         if train_dataloader is None or val_dataloader is None:
             raise ValueError("Please process the data first.")
         if output_scaler is None:
@@ -690,17 +725,13 @@ def on_export_losses(working_directory_path, file_name, train_losses, val_losses
     try:
         if not train_losses:
             raise ValueError("Please train the model first.")
-        file_name = sanitize_path_component(file_name, "file name")
-        df = pd.DataFrame()
-        df['train_losses'] = train_losses
-        df['val_losses'] = val_losses
-        file_path = os.path.join(working_directory_path, f"{file_name}.csv")
-        df.to_csv(file_path, index_label='epoch')
-        status = f"Losses exported to {file_name}.csv."
-        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+        df = pd.DataFrame({"epoch": range(len(train_losses)), "train_losses": train_losses, "val_losses": val_losses})
+        filename = export_result_csv(working_directory_path, file_name, df)
+        status = f"Losses exported to {filename}."
+        return f"<span style='color: green;'>{escape(status)}</span>", get_working_directory_contents(working_directory_path)
     except Exception as exc:
         status = f"Error exporting losses: {exc}"
-        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
+        return f"<span style='color: red;'>{escape(status)}</span>", gr.update()
 
 # Define the test function
 @torch.no_grad()
@@ -794,6 +825,7 @@ def on_evaluate(model, dataset, test_dataloader, device, datatype, output_scaler
         if len(columns) != len(set(columns)):
             raise ValueError("Target names overlap generated evaluation columns. Rename the affected targets and retrain.")
         ensure_model_on_device(model, device)
+        ensure_model_split(model, dataset)
         # Get test predictions
         y_test, y_pred, test_smiles_arr = test(model, dataset, test_dataloader, device, datatype, output_scaler, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca)
         if len(test_smiles_arr) == 0:
@@ -932,14 +964,12 @@ def on_export_prediction(working_directory_path, prediction_file_name, predictio
     try:
         if prediction_df is None:
             raise ValueError("Please make a prediction first.")
-        prediction_file_name = sanitize_path_component(prediction_file_name, "file name")
-        prediction_file_path = os.path.join(working_directory_path, f"{prediction_file_name}.csv")
-        prediction_df.to_csv(prediction_file_path, index=False)
-        status = f"Predictions exported: {prediction_file_name}.csv"
-        return f"<span style='color: green;'>{status}</span>", get_working_directory_contents(working_directory_path)
+        filename = export_result_csv(working_directory_path, prediction_file_name, prediction_df)
+        status = f"Predictions exported: {filename}"
+        return f"<span style='color: green;'>{escape(status)}</span>", get_working_directory_contents(working_directory_path)
     except Exception as exc:
         status = f"Error exporting predictions: {exc}"
-        return f"<span style='color: red;'>{status}</span>", get_working_directory_contents(working_directory_path)
+        return f"<span style='color: red;'>{escape(status)}</span>", gr.update()
 
 def regression_hybrid_tab_content():
     with gr.Tab("Regression - Hybrid GNN") as regression_tab:
@@ -959,7 +989,6 @@ def regression_hybrid_tab_content():
                         device_dropdown = get_device_dropdown()
                         datatype_dropdown = gr.Dropdown(label="Data type", value="float32", choices=["float16", "float32", "float64", "bfloat16"])
                         datatype_state = gr.State(value=torch.float32)
-                        random_seed_slider = gr.Slider(minimum=0, maximum=1000, value=0, step=1, label="Random seed")
                 with gr.Accordion("Upload Dataset"):
                     with gr.Row(equal_height=True):
                         with gr.Column(scale=1):
@@ -967,6 +996,7 @@ def regression_hybrid_tab_content():
                             dataset_name_textbox = gr.Textbox(label="Dataset name", value="dataset")
                             smiles_column_textbox = gr.Textbox(label="SMILES column", value="SMILES")
                             target_columns_textbox = gr.Textbox(label="Target columns (separated by commas)", value="target")
+                            canonicalize_smiles_checkbox, remove_duplicates_checkbox, remove_salt_checkbox = dataset_cleanup_controls()
                             upload_dataset_button = gr.Button(value="Load dataset", interactive=False)
                         with gr.Column(scale=2):
                             dataset_preview_dataframe = gr.Dataframe(label="Dataset preview", max_height=360, interactive=False)
@@ -976,12 +1006,12 @@ def regression_hybrid_tab_content():
                     with gr.Row():
                         with gr.Column(scale=1):
                             gr.Markdown(value="**Graph extraction**")
-                            graph_directory_textbox = gr.Textbox(label="Graph directory", value="graphs")
+                            graph_directory_textbox = gr.Textbox(label="Graph directory", value="GRAPH_graphs", info="GRAPH_ is added automatically when omitted.")
                             graph_featurizer_dropdown = gr.Dropdown(label="Graph featurizer", value="MolGraphConvFeaturizer", choices=["MolGraphConvFeaturizer", "PagtnMolGraphFeaturizer", "DMPNNFeaturizer"])
                             extract_graphs_button = gr.Button(value="Extract graphs", interactive=False)
                         with gr.Column(scale=1):
                             gr.Markdown(value="**Molecular fingerprint extraction**")
-                            molecular_fingerprint_directory_textbox = gr.Textbox(label="Molecular fingerprint directory", value="molecular_fingerprints")
+                            molecular_fingerprint_directory_textbox = gr.Textbox(label="Molecular fingerprint directory", value="FP_fingerprints", info="FP_ is added automatically when omitted.")
                             molecular_fingerprint_dropdown = gr.Dropdown(label="Molecular fingerprint", value="Morgan fingerprint", choices=["Morgan fingerprint", "Atom-pair fingerprint", "Topological-torsion fingerprint", "Avalon fingerprint", "Layered fingerprint", "Pattern fingerprint", "RDKit fingerprint"])
                             radius_slider = gr.Slider(label="Radius", value=2, minimum=1, maximum=5, step=1)
                             number_of_bits_slider = gr.Slider(label="Number of bits", value=2048, minimum=128, maximum=4096, step=128)
@@ -992,8 +1022,8 @@ def regression_hybrid_tab_content():
                         load_data_radio = gr.Radio(label="Which data to load?", choices=["Graphs", "Molecular fingerprints", "Both"], value="Both")
                     with gr.Row():
                         with gr.Column(scale=1):
-                            graph_directory_dropdown = gr.Dropdown(label="Graph directory", choices=[])
-                            molecular_fingerprint_directory_dropdown = gr.Dropdown(label="Molecular fingerprint directory", choices=[])
+                            graph_directory_dropdown = gr.Dropdown(label="Graph directory", choices=[], info="Extracted graphs in GRAPH_ folders.")
+                            molecular_fingerprint_directory_dropdown = gr.Dropdown(label="Molecular fingerprint directory", choices=[], info="Extracted fingerprints in FP_ folders.")
                             dimensionality_reduction_checkbox = gr.Checkbox(label="Dimensionality reduction (for molecular fingerprints)", value=False)
                             variance_threshold_slider = gr.Slider(minimum=0, maximum=1.0, value=0.01, step=0.01, label="Variance threshold", visible=False)
                             pca_num_components_slider = gr.Slider(minimum=1, maximum=256, value=32, step=1, label="PCA number of components", visible=False)
@@ -1003,6 +1033,7 @@ def regression_hybrid_tab_content():
                                 info="Scaffold keeps molecules with the same Murcko scaffold in one split. Sizes are approximate; all acyclic molecules share one scaffold.")
                             test_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Test size")
                             val_size_slider = gr.Slider(minimum=0, maximum=1.0, value=0.2, step=0.01, label="Validation size")
+                            data_split_seed_slider = gr.Slider(minimum=0, maximum=1000, value=0, step=1, label="Data split random seed")
                             batch_size_dropdown = gr.Dropdown(label="Batch size", value=32, choices=[1, 2, 4, 8, 16, 32, 64, 128, 256, 512])
                             shuffle_checkbox = gr.Checkbox(label="Shuffle training data each epoch", value=True,
                                                            info="Shuffling is seeded from the random seed, so runs stay reproducible. Uncheck for a fixed batch order.")
@@ -1014,10 +1045,12 @@ def regression_hybrid_tab_content():
                             variance_threshold_state = gr.State()
                             pca_state = gr.State()
                             output_scaler_state = gr.State()
+                    split_context_state = gr.State()
+                    similarity_controls = build_similarity_controls()
                 with gr.Accordion("Model"):
                     with gr.Row():
-                        with gr.Column(scale=1) as graph_convolutional_block:
-                            gr.Markdown(value="**Graph convolutional block**")
+                        with gr.Column(scale=1) as graph_encoder_column:
+                            gr.Markdown(value="**Graph Encoder**")
                             gnn_model_tab_state = gr.State(value="GCN")
                             with gr.Tabs():
                                 with gr.Tab("GCN") as gcn_tab:
@@ -1064,17 +1097,21 @@ def regression_hybrid_tab_content():
                                     customgcn_n_heads = gr.Slider(label="n_heads", minimum=1, maximum=8, value=3, step=1)
                                     customgcn_n_outputs = gr.Slider(label="n_outputs", minimum=0, maximum=512, value=50, step=1)
                                     customgcn_tab.select(on_gnn_model_tab_selected, [], gnn_model_tab_state)
-                        with gr.Column(scale=1) as molecular_fingerprint_block:
-                            gr.Markdown(value="**Molecular fingerprint block**")
+                        with gr.Column(scale=1) as fingerprint_encoder_column:
+                            gr.Markdown(value="**Fingerprint Encoder**")
                             mlp_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
                             mlp_n_layers = gr.Slider(label="n_layers", minimum=1, maximum=6, value=3, step=1)
                             mlp_n_outputs = gr.Slider(label="n_outputs", minimum=0, maximum=512, value=50, step=1)
                         with gr.Column(scale=1):
-                            gr.Markdown(value="**Predictor block**")
+                            gr.Markdown(value="**Prediction Head**")
                             predictor_n_hiddens = gr.Dropdown(label="n_hiddens", value=128, choices=[16, 32, 64, 128, 256, 512])
                             predictor_n_layers = gr.Slider(label="n_layers", minimum=0, maximum=6, value=1, step=1)
                     with gr.Row():
+                        model_name_textbox = gr.Textbox(label="Model name", value="regression_hybrid", info="Saved in MODEL_<model name>_<model seed>.")
+                        model_random_seed_slider = gr.Slider(minimum=0, maximum=1000, value=0, step=1, label="Model random seed")
+                    with gr.Row():
                         create_model_button = gr.Button(value="Create model", interactive=False)
+                        run_directory_textbox = gr.Textbox(label="Run directory", interactive=False)
                         model_state = gr.State()
                         train_losses_state = gr.State()
                         val_losses_state = gr.State()
@@ -1085,7 +1122,7 @@ def regression_hybrid_tab_content():
                         with gr.Column(scale=1):
                             checkpoint_name_textbox = gr.Textbox(label="Checkpoint name", value="checkpoint")
                             save_checkpoint_button = gr.Button(value="Save checkpoint", interactive=False)
-                            checkpoint_file_dropdown = gr.Dropdown(label="Checkpoint file", choices=[])
+                            checkpoint_file_dropdown = gr.Dropdown(label="Checkpoint file", choices=[], info="Checkpoints inside MODEL_ folders.")
                             load_checkpoint_button = gr.Button(value="Load checkpoint", interactive=False)
                 with gr.Accordion("Model training"):
                     with gr.Row(): 
@@ -1128,8 +1165,8 @@ def regression_hybrid_tab_content():
                     with gr.Row():
                         with gr.Column(scale=1):
                             prediction_dataset_file_dropdown = gr.Dropdown(label="Prediction dataset file", choices=[])
-                            prediction_graph_directory_dropdown = gr.Dropdown(label="Graph directory", choices=[])
-                            prediction_molecular_fingerprint_directory_dropdown = gr.Dropdown(label="Molecular fingerprint directory", choices=[])
+                            prediction_graph_directory_dropdown = gr.Dropdown(label="Graph directory", choices=[], info="Extracted graphs in GRAPH_ folders.")
+                            prediction_molecular_fingerprint_directory_dropdown = gr.Dropdown(label="Molecular fingerprint directory", choices=[], info="Extracted fingerprints in FP_ folders.")
                             process_prediction_data_button = gr.Button(value="Process prediction data", interactive=False)
                         with gr.Column(scale=2):
                             with gr.Row(equal_height=True): 
@@ -1144,8 +1181,26 @@ def regression_hybrid_tab_content():
                                 prediction_dataframe = gr.DataFrame(label="Prediction", wrap=False, interactive=False)
 
     # Working directory interactions
-    working_directory_dropdown.change(on_open_working_directory, working_directory_dropdown, [working_directory_dropdown, upload_dataset_button, extract_graphs_button, extract_molecule_fingerprints_button, process_data_button, working_directory_path_state, working_directory_content_list_state])
-    open_working_directory_button.click(on_open_working_directory, working_directory_dropdown, [working_directory_dropdown, upload_dataset_button, extract_graphs_button, extract_molecule_fingerprints_button, process_data_button, working_directory_path_state, working_directory_content_list_state])
+    concurrency_id = "regression_hybrid-" + str(split_context_state._id)
+    directory_resets = directory_reset_updates(
+        clear_states=[split_context_state, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state,
+                      model_state, optimizer_state, schedular_state, evaluation_df_state, prediction_dataset_state,
+                      prediction_dataloader_state, variance_threshold_state, pca_state, output_scaler_state],
+        loss_states=[train_losses_state, val_losses_state], epoch_state=trained_epochs_state,
+        disable_buttons=[create_model_button, create_optimizer_button, train_button, evaluate_button,
+                         save_checkpoint_button, load_checkpoint_button, process_prediction_data_button,
+                         predict_button, export_losses_button, export_evaluation_button, export_metrics_button, export_prediction_button],
+        clear_components=[run_directory_textbox, dataset_preview_dataframe, training_plot, evaluation_metrics_dataframe, evaluation_plot,
+                          prediction_dataframe, model_summary_textarea], similarity_controls=similarity_controls,
+    )
+    directory_resets[target_column_dropdown] = gr.update(choices=[], value=None)
+    bind_working_directory(working_directory_dropdown, "change", on_open_working_directory, working_directory_dropdown,
+                           [working_directory_dropdown, upload_dataset_button, extract_graphs_button, extract_molecule_fingerprints_button, process_data_button, working_directory_path_state, working_directory_content_list_state],
+                           reset_updates=directory_resets, concurrency_id=concurrency_id)
+    bind_working_directory(open_working_directory_button, "click", on_open_working_directory, working_directory_dropdown,
+                           [working_directory_dropdown, upload_dataset_button, extract_graphs_button, extract_molecule_fingerprints_button, process_data_button, working_directory_path_state, working_directory_content_list_state],
+                           reset_updates=directory_resets, concurrency_id=concurrency_id)
+    bind_similarity_controls(similarity_controls, split_context_state, status_html, concurrency_id=concurrency_id)
     working_directory_content_list_state.change(on_content_list_change, [working_directory_path_state, dataset_name_textbox, graph_directory_textbox, molecular_fingerprint_directory_textbox, checkpoint_name_textbox],
                                                 [working_directory_content_list_dataframe,
                                                  dataset_file_feature_extraction_dropdown, graph_directory_dropdown, molecular_fingerprint_directory_dropdown, dataset_file_process_data_dropdown, checkpoint_file_dropdown, prediction_dataset_file_dropdown, prediction_graph_directory_dropdown, prediction_molecular_fingerprint_directory_dropdown])
@@ -1154,37 +1209,40 @@ def regression_hybrid_tab_content():
     datatype_dropdown.change(on_datatype_change, datatype_dropdown, datatype_state)
 
     # Load dataset and process data interactions
-    upload_dataset_button.click(on_upload_dataset, [dataset_file, working_directory_path_state, dataset_name_textbox, smiles_column_textbox, target_columns_textbox], [status_html, dataset_preview_dataframe, working_directory_content_list_state])
+    bind_artifact_update(upload_dataset_button, on_upload_dataset, [dataset_file, working_directory_path_state, dataset_name_textbox, smiles_column_textbox, target_columns_textbox,
+                                                  canonicalize_smiles_checkbox, remove_duplicates_checkbox, remove_salt_checkbox],
+                                [status_html, dataset_preview_dataframe, working_directory_content_list_state], dataset_state=dataset_state, reset_updates=directory_resets, kind="upload", concurrency_id=concurrency_id)
 
     # Feature extraction interactions
-    extract_graphs_button.click(on_extract_graphs, [working_directory_path_state, dataset_file_feature_extraction_dropdown, graph_directory_textbox, graph_featurizer_dropdown, datatype_state], [status_html, working_directory_content_list_state])
+    bind_artifact_update(extract_graphs_button, on_extract_graphs, [working_directory_path_state, dataset_file_feature_extraction_dropdown, graph_directory_textbox, graph_featurizer_dropdown, datatype_state], [status_html, working_directory_content_list_state], dataset_state=dataset_state, reset_updates=directory_resets, kind="graphs", concurrency_id=concurrency_id)
     molecular_fingerprint_dropdown.change(on_molecular_fingerprint_change, molecular_fingerprint_dropdown, radius_slider)
-    load_data_radio.change(on_load_data_option_change, [load_data_radio, dimensionality_reduction_checkbox], [graph_directory_dropdown, molecular_fingerprint_directory_dropdown, dimensionality_reduction_checkbox, variance_threshold_slider, pca_num_components_slider, graph_convolutional_block, molecular_fingerprint_block, prediction_graph_directory_dropdown, prediction_molecular_fingerprint_directory_dropdown])
-    extract_molecule_fingerprints_button.click(on_extract_molecule_fingerprints, [working_directory_path_state, dataset_file_feature_extraction_dropdown, molecular_fingerprint_directory_textbox, molecular_fingerprint_dropdown, radius_slider, number_of_bits_slider], [status_html, working_directory_content_list_state])
+    load_data_radio.change(on_load_data_option_change, [load_data_radio, dimensionality_reduction_checkbox], [graph_directory_dropdown, molecular_fingerprint_directory_dropdown, dimensionality_reduction_checkbox, variance_threshold_slider, pca_num_components_slider, graph_encoder_column, fingerprint_encoder_column, prediction_graph_directory_dropdown, prediction_molecular_fingerprint_directory_dropdown])
+    bind_artifact_update(extract_molecule_fingerprints_button, on_extract_molecule_fingerprints, [working_directory_path_state, dataset_file_feature_extraction_dropdown, molecular_fingerprint_directory_textbox, molecular_fingerprint_dropdown, radius_slider, number_of_bits_slider], [status_html, working_directory_content_list_state], dataset_state=dataset_state, reset_updates=directory_resets, kind="fingerprints", concurrency_id=concurrency_id)
 
     # Process data interactions
     dimensionality_reduction_checkbox.change(on_dimensionality_reduction_change, dimensionality_reduction_checkbox, [variance_threshold_slider, pca_num_components_slider])
     bind_data_processing(
-        process_data_button, on_process_data,
-        [working_directory_path_state, dataset_file_process_data_dropdown, load_data_radio, graph_directory_dropdown, molecular_fingerprint_directory_dropdown, datatype_state, dimensionality_reduction_checkbox, variance_threshold_slider, pca_num_components_slider, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, random_seed_slider, split_method_radio],
-        [status_html, create_model_button, target_column_dropdown, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state, variance_threshold_state, pca_state, output_scaler_state],
+        process_data_button, capture_split_outputs(on_process_data, 3, similarity_controls),
+        [working_directory_path_state, dataset_file_process_data_dropdown, load_data_radio, graph_directory_dropdown, molecular_fingerprint_directory_dropdown, datatype_state, dimensionality_reduction_checkbox, variance_threshold_slider, pca_num_components_slider, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, data_split_seed_slider, split_method_radio],
+        [status_html, create_model_button, target_column_dropdown, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state, variance_threshold_state, pca_state, output_scaler_state, split_context_state, *similarity_controls.reset_outputs],
         clear_states=[model_state, optimizer_state, schedular_state, evaluation_df_state,
                       prediction_dataset_state, prediction_dataloader_state],
-        loss_states=[train_losses_state, val_losses_state], epoch_state=trained_epochs_state,
+        loss_states=[train_losses_state, val_losses_state], epoch_state=trained_epochs_state, concurrency_id=concurrency_id,
         disable_buttons=[create_optimizer_button, train_button, evaluate_button,
                          save_checkpoint_button, load_checkpoint_button, process_prediction_data_button,
                          predict_button, export_losses_button, export_evaluation_button, export_metrics_button, export_prediction_button],
-        clear_components=[model_summary_textarea, training_plot, evaluation_metrics_dataframe,
+        clear_components=[run_directory_textbox, model_summary_textarea, training_plot, evaluation_metrics_dataframe,
                           evaluation_plot, prediction_dataframe],
     )
     
     # Create model interactions
     result_reset = dict(
+        concurrency_id=concurrency_id,
         clear_states=[evaluation_df_state],
         disable_buttons=[export_evaluation_button, export_metrics_button, export_prediction_button],
         clear_components=[evaluation_metrics_dataframe, evaluation_plot, prediction_dataframe],
     )
-    bind_result_invalidation(create_model_button, on_create_model, [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, random_seed_slider, variance_threshold_state, pca_state,
+    bind_result_invalidation(create_model_button, show_model_run(on_create_model, 8), [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, model_random_seed_slider, variance_threshold_state, pca_state,
                                                 gcn_n_hiddens, gcn_num_layers, gcn_dropout, gcn_n_outputs,
                                                 graph_sage_n_hiddens, graph_sage_num_layers, graph_sage_dropout, graph_sage_n_outputs,
                                                 gin_n_hiddens, gin_num_layers, gin_dropout, gin_n_outputs,
@@ -1193,34 +1251,34 @@ def regression_hybrid_tab_content():
                                                 attentivefp_n_hiddens, attentivefp_num_layers, attentivefp_num_timesteps, attentivefp_dropout, attentivefp_n_outputs,
                                                 customgcn_convolutional_layer_name, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_heads, customgcn_n_outputs,
                                                 mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
-                                                predictor_n_hiddens, predictor_n_layers],
-                                                [status_html, model_summary_textarea, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state], **result_reset)
-    save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, variance_threshold_state, pca_state, output_scaler_state], [status_html, working_directory_content_list_state])
-    bind_result_invalidation(load_checkpoint_button, on_load_checkpoint, [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state, output_scaler_state],
-                                 [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state, output_scaler_state], **result_reset)
+                                                predictor_n_hiddens, predictor_n_layers, model_name_textbox],
+                                                [status_html, model_summary_textarea, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state, run_directory_textbox], **result_reset)
+    save_checkpoint_button.click(on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, variance_threshold_state, pca_state, output_scaler_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
+    bind_result_invalidation(load_checkpoint_button, show_model_run(on_load_checkpoint, 1, restore_controls=True), [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state, output_scaler_state],
+                                 [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state, output_scaler_state, run_directory_textbox, model_name_textbox, model_random_seed_slider], **result_reset)
     
     # Train model interactions
-    create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [status_html, optimizer_state, schedular_state, train_button])
+    create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [status_html, optimizer_state, schedular_state, train_button], concurrency_id=concurrency_id)
     bind_result_invalidation(train_button, on_train, [model_state, dataset_state, train_dataloader_state, val_dataloader_state, device_dropdown, datatype_state, output_scaler_state,
                                   optimizer_state, schedular_state, epochs_slider, trained_epochs_state, train_losses_state, val_losses_state,
                                   gnn_model_tab_state, customgcn_convolutional_layer_name, variance_threshold_state, pca_state],
                                   [status_html, training_plot, export_losses_button, trained_epochs_state, train_losses_state, val_losses_state], **result_reset)
-    export_losses_button.click(on_export_losses, [working_directory_path_state, loss_file_name_textbox, train_losses_state, val_losses_state], [status_html, working_directory_content_list_state])
+    export_losses_button.click(route_model_export(on_export_losses), [working_directory_path_state, loss_file_name_textbox, train_losses_state, val_losses_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
     
     # Evaluate model interactions
     evaluate_button.click(on_evaluate, [model_state, dataset_state, test_dataloader_state, device_dropdown, datatype_state, output_scaler_state,
                                         gnn_model_tab_state, customgcn_convolutional_layer_name, variance_threshold_state, pca_state],
-                                        [status_html, evaluation_df_state, export_evaluation_button, export_metrics_button]
-                         ).then(on_target_column_change, [evaluation_df_state, target_column_dropdown], [evaluation_metrics_dataframe, evaluation_plot])
-    target_column_dropdown.change(on_target_column_change, [evaluation_df_state, target_column_dropdown], [evaluation_metrics_dataframe, evaluation_plot])
-    export_evaluation_button.click(on_export_evaluation, [working_directory_path_state, evaluation_file_name_textbox, evaluation_df_state], [status_html, working_directory_content_list_state])
-    export_metrics_button.click(on_export_metrics, [working_directory_path_state, metrics_file_name_textbox, evaluation_df_state, dataset_state], [status_html, working_directory_content_list_state])
+                                        [status_html, evaluation_df_state, export_evaluation_button, export_metrics_button], concurrency_id=concurrency_id
+                         ).then(on_target_column_change, [evaluation_df_state, target_column_dropdown], [evaluation_metrics_dataframe, evaluation_plot], concurrency_id=concurrency_id)
+    target_column_dropdown.change(on_target_column_change, [evaluation_df_state, target_column_dropdown], [evaluation_metrics_dataframe, evaluation_plot], concurrency_id=concurrency_id)
+    export_evaluation_button.click(route_model_export(on_export_evaluation), [working_directory_path_state, evaluation_file_name_textbox, evaluation_df_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
+    export_metrics_button.click(route_model_export(on_export_metrics), [working_directory_path_state, metrics_file_name_textbox, evaluation_df_state, dataset_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
         
     # Make prediction interactions
-    process_prediction_data_button.click(on_process_prediction_data, [working_directory_path_state, prediction_dataset_file_dropdown, dataset_state, prediction_graph_directory_dropdown, prediction_molecular_fingerprint_directory_dropdown, datatype_state, batch_size_dropdown], [status_html, prediction_dataset_state, prediction_dataloader_state, predict_button])
+    process_prediction_data_button.click(on_process_prediction_data, [working_directory_path_state, prediction_dataset_file_dropdown, dataset_state, prediction_graph_directory_dropdown, prediction_molecular_fingerprint_directory_dropdown, datatype_state, batch_size_dropdown], [status_html, prediction_dataset_state, prediction_dataloader_state, predict_button], concurrency_id=concurrency_id)
     predict_button.click(on_predict, [model_state, dataset_state, prediction_dataset_state, prediction_dataloader_state, device_dropdown, datatype_state, output_scaler_state,
                                       gnn_model_tab_state, customgcn_convolutional_layer_name, variance_threshold_state, pca_state],
-                                      [status_html, prediction_dataframe, export_prediction_button])
-    export_prediction_button.click(on_export_prediction, [working_directory_path_state, prediction_file_name_textbox, prediction_dataframe], [status_html, working_directory_content_list_state])
+                                      [status_html, prediction_dataframe, export_prediction_button], concurrency_id=concurrency_id)
+    export_prediction_button.click(route_model_export(on_export_prediction), [working_directory_path_state, prediction_file_name_textbox, prediction_dataframe, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
     
     return regression_tab

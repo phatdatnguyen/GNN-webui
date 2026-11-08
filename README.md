@@ -14,6 +14,12 @@ The six workflows are:
 | Regression - 3D GNN | `regression_3d.py` | 3D conformers |
 | Regression - Classical ML Models | `regression_classical.py` | Fingerprints |
 
+The neural-network block names in the interface and model summaries are
+**Graph Encoder**, **Fingerprint Encoder**, and **Prediction Head**. The graph and
+fingerprint encoders produce molecular representations; the prediction head transforms
+the selected encoder outputs before the final output layer. Algorithm names such as
+GCN, GraphSAGE, SchNet, and the classical Multilayer Perceptron remain unchanged.
+
 
 ## Installation
 
@@ -104,7 +110,71 @@ Data/
     ESOL_3D/
 ```
 
-Each dataset folder holds its CSV files, extracted features, and checkpoints.
+Each dataset folder holds its CSV files, extracted features, split results, and model runs.
+Split and model folders are siblings:
+
+```text
+ESOL/
+  dataset.csv
+  GRAPH_graphs/
+  FP_fingerprints/
+  random_seed_17/
+    split_<split identity>.json
+    similarity_distribution.csv
+    nearest_neighbors.csv
+  MODEL_my_model_42/
+    run.json
+    checkpoint_100.ckpt
+    losses.csv
+    test_metrics.csv
+    evaluation.csv
+    predictions.csv
+```
+
+Here `17` is the data split seed and `42` is the model seed. Classical models use
+`.joblib` files in their model-run folder. Model and split-result folders are created
+when results are saved or exported; feature folders are created during extraction.
+The filenames above are examples.
+
+The app adds a type prefix to each output directory: `GRAPH_` for extracted 2D or 3D
+graphs, `FP_` for fingerprints, and `MODEL_` for model runs. You can enter a short name
+such as `graphs` or an already prefixed name such as `GRAPH_graphs`; the matching
+prefix is added only once. The model label itself is retained in the run metadata.
+
+Training and prediction graph selectors show only usable `GRAPH_` folders, and
+fingerprint selectors show only usable `FP_` folders. Checkpoint selectors search
+all `MODEL_` subdirectories for `.ckpt` files in GNN tabs or `.joblib` files in
+classical tabs. Root-level checkpoints and folders without the matching prefix are
+omitted from the selectors. Existing folders are not renamed automatically.
+
+## Loading datasets
+
+All six workflows provide three checkboxes in one row immediately above **Load dataset**.
+They are all checked by default:
+
+| Option | Effect on the imported dataset |
+| --- | --- |
+| **Canonicalize SMILES** | Write canonical SMILES while preserving stereochemistry and isotopes. |
+| **Remove duplicates** | Keep the first row for each molecule, including that row's target values. |
+| **Remove salt** | Remove recognized salt fragments from the saved SMILES, retaining the molecule. |
+
+Salt removal runs before duplicate detection. Duplicates are compared by molecular
+identity even when canonical SMILES output is disabled; distinct stereoisomers remain
+separate. Uncheck **Remove duplicates** to retain replicate measurements or repeated
+prediction rows. If both salt removal and canonicalization are unchecked, valid input
+SMILES keep their original representation.
+
+Rows with missing required values, invalid SMILES, or molecules excluded by the app's
+carbon filter are removed regardless of these options. The loading status reports
+the number of molecules imported and removed, with removal reasons. Canonicalizing
+a SMILES or stripping a salt fragment does not itself count as removing a molecule.
+If no valid molecules remain, the load fails without replacing an existing dataset.
+
+These controls apply to the loaded CSV. Feature extraction and scaffold grouping
+retain their existing salt stripping, including when salts were kept at import.
+After replacing a dataset or changing its import options, re-extract its features
+and process the data again so rows remain aligned. For prediction-only CSVs, leave
+the target-column field blank; 3D workflows accept at most one target column.
 
 ## Data splitting and evaluation
 
@@ -131,6 +201,54 @@ model and results, along with any GNN optimizer and training history. Create or 
 model again for the new split, so a model trained on an older split cannot be evaluated
 against a new holdout accidentally.
 
+### Separate data and model seeds
+
+**Data split random seed** is in the split controls of **Load and process data**,
+above **Batch size** in the GNN tabs. It controls split selection, GNN training-loader
+shuffling, and randomized PCA. Changing it takes effect when data is processed again.
+
+**Model name** and **Model random seed** appear together above **Create model**
+(**Fit model** for classical ML). This seed initializes the neural network or seeds
+the selected scikit-learn estimator. Deterministic estimators may not use randomness.
+Each model captures its name, seed, settings, and processed split when created or fitted.
+Changing the controls afterward does not rename an existing run or redirect its files.
+
+Checkpoints, loss data, metrics, evaluation rows, and predictions are saved under
+`MODEL_<model name>_<model seed>/`. The run's `run.json` records both seeds, model settings,
+dataset and feature identities, and row assignments for later comparisons. Reusing a folder with
+different data or model settings is refused; choose another model name to keep the
+runs separate. Split-result folders remain `random_seed_<data split seed>/` beside
+the `MODEL_` folders.
+
+The saved-model selectors find files inside `MODEL_` folders. Loading a saved
+run restores its recorded name and model seed. Training and evaluation require its
+original processed split and features; prediction can use compatible new data. The
+block rename also changes hybrid neural-network checkpoint parameter keys to
+`graph_encoder`, `fingerprint_encoder`, and `prediction_head`. Old parameter keys
+are not migrated; create and save new models for the renamed architecture.
+
+### Training–test similarity
+
+At the bottom of **Load and process data**, process a split and click
+**Calculate training–test similarity**. The calculation uses Morgan fingerprints
+from the captured molecular SMILES, with configurable radius and bit count, and
+Tanimoto similarity. It is available in all six tabs, including graph-only workflows.
+It uses the extractor's salt removal and hydrogen handling and ignores chirality;
+model feature selection and PCA do not affect this comparison.
+
+The plots show the distribution of all training–test pair similarities and each
+test molecule's nearest training neighbor similarity. Validation rows are excluded.
+The neighbor table identifies the matched molecules and their zero-based dataset
+row numbers. Ties select the lowest training row number.
+
+Choose filenames and export the distribution counts or nearest-neighbor rows to
+`random_seed_<data split seed>/`. Each CSV has a companion `.csv.metadata.json`
+recording the split, fingerprint settings, and summary. The folder uses the seed
+captured during processing, even if the slider has since changed. Processing another
+split clears the previous similarity results; creating or training a model retains them.
+The calculation compares every training–test pair in bounded chunks, so large datasets
+can take time without requiring a full pairwise matrix in memory.
+
 All classification tabs report accuracy, precision, recall, specificity, F1,
 ROC-AUC, balanced accuracy, MCC, AUPRC, and average precision. Hybrid and classical
 workflows support multiple target columns, with metrics per target. AUPRC uses trapezoidal integration of the
@@ -155,7 +273,8 @@ All six tabs provide two exports in **Model evaluation**:
 | **Evaluation export file** (default `evaluation`) | **Export evaluation rows (all targets)** | One row per test molecule: `SMILES`, actual target values, `<target> (Prediction)`, and classification `<target> (Probability)` |
 
 Evaluate the model first, then choose a filename and click the corresponding export
-button. Files are saved in the currently opened working directory. Names may include
+button. Files are saved in the model's captured `MODEL_<model name>_<model seed>/` folder
+inside its working directory. Names may include
 the `.csv` extension; it is added if omitted. Exporting to an existing filename replaces
 that file. Undefined metrics are written as empty CSV cells.
 
@@ -210,7 +329,7 @@ positive; Tweedie's requirements depend on the chosen power. Gaussian processes,
 kernel ridge, and some wide linear models can be expensive on large datasets.
 
 Open a working folder, upload a CSV with SMILES and one or more target columns,
-and extract fingerprints. Existing aligned fingerprint folders can also be used.
+and extract fingerprints. Existing aligned `FP_` fingerprint folders can also be used.
 Process the data with Random or Scaffold splitting, select a model, and train.
 The estimator and any feature scaling are fitted on the training partition only.
 Classification targets must be 0/1, with both classes present in each training
@@ -259,6 +378,7 @@ Useful selections:
 pytest tests/test_models.py          # every architecture, at every layer count
 pytest tests/test_handlers.py        # the Gradio callbacks end to end
 pytest tests/test_classical_api.py tests/test_evaluation_exports_api.py  # all six export flows through Gradio
+pytest tests/test_run_utils.py tests/test_similarity.py  # run provenance and similarity calculations
 pytest -k checkpoint                 # one topic across all files
 ```
 
@@ -273,5 +393,11 @@ PYTHONMALLOC=malloc python -m pytest
 ```
 
 This uses the system memory allocator instead of Python's small-object allocator.
-The underlying native crash remains undiagnosed; no dependency versions were changed
-to work around it. Keep the crash log when investigating the environment.
+The underlying native crash remains undiagnosed, and this setting does not eliminate
+every occurrence; no dependency versions were changed to work around it. Keep the
+crash log when investigating the environment.
+
+The MTX CUDA investigation also reproduced a training crash with this workaround
+enabled, and reproduced a Python-only crash without the app or GPU libraries.
+See [the investigation and standalone Python 3.11 check](diagnostics/segfault-investigation.md)
+before treating an allocator or architecture change as a fix.

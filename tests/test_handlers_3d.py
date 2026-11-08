@@ -14,12 +14,14 @@ from torch_geometric.loader import DataLoader
 import binary_classification_3d as bc3
 import regression_3d as rg3
 from conftest import FakeProgress, SMILES_3D, create_model_3d_args, is_error, is_ok
+from gnn_run_ui import route_model_export
+from run_utils import run_directory, list_saved_models
 
 pytestmark = pytest.mark.slow
 
 
 def process_3d_classification(workdir, shuffle=False):
-    return bc3.on_process_data(workdir, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, shuffle, 0)
+    return bc3.on_process_data(workdir, "dataset.csv", "GRAPH_g3d", torch.float32, 0.25, 0.25, 4, shuffle, 0)
 
 
 @pytest.fixture
@@ -157,7 +159,7 @@ def test_3d_evaluate_without_a_model_reports_an_error(classifier_3d):
 def test_3d_prediction(classifier_3d):
     c = classifier_3d
     status, prediction_dataset, dataloader, _ = bc3.on_process_prediction_data(
-        c["workdir"], "dataset.csv", "g3d", torch.float32, 4)
+        c["workdir"], "dataset.csv", "GRAPH_g3d", torch.float32, 4)
     assert is_ok(status)
 
     status, prediction_df, _ = bc3.on_predict(c["model"], c["dataset"], dataloader,
@@ -212,7 +214,7 @@ def test_3d_regression_flow(tmp_path, workdir_3d):
     df.to_csv(path, index=False)
 
     status, _, dataset, train_dl, val_dl, test_dl, scaler = rg3.on_process_data(
-        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, False, 0)
+        workdir_3d, "dataset.csv", "GRAPH_g3d", torch.float32, 0.25, 0.25, 4, False, 0)
     assert is_ok(status), status
     assert scaler is not None
 
@@ -237,7 +239,7 @@ def test_3d_regression_checkpoint_carries_the_scaler(workdir_3d):
     df.to_csv(path, index=False)
 
     _, _, dataset, _, _, _, scaler = rg3.on_process_data(
-        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, False, 0)
+        workdir_3d, "dataset.csv", "GRAPH_g3d", torch.float32, 0.25, 0.25, 4, False, 0)
     model = rg3.on_create_model(*create_model_3d_args(dataset, "SchNet"))[-4]
 
     rg3.on_save_checkpoint(workdir_3d, "ckpt", model, 0, scaler)
@@ -254,7 +256,7 @@ def test_3d_regression_evaluate_without_a_scaler_reports_an_error(workdir_3d):
     df.to_csv(path, index=False)
 
     _, _, dataset, _, _, test_dl, _ = rg3.on_process_data(
-        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, False, 0)
+        workdir_3d, "dataset.csv", "GRAPH_g3d", torch.float32, 0.25, 0.25, 4, False, 0)
     model = rg3.on_create_model(*create_model_3d_args(dataset, "SchNet"))[-4]
 
     status, eval_df = rg3.on_evaluate(model, dataset, test_dl, "cpu", torch.float32, None)[:2]
@@ -328,7 +330,7 @@ def test_3d_processing_disables_both_evaluation_exports(tmp_path, monkeypatch, m
     with gr.Blocks() as blocks:
         builder()
     process = next(event for event in blocks.fns.values() if getattr(event.fn, "__name__", None) == "on_process_data")
-    updates = process.fn(str(tmp_path), "missing.csv", "graphs", torch.float32, 0.2, 0.2, 4, False, 0, "Random")
+    updates = process.fn(str(tmp_path), "missing.csv", "GRAPH_graphs", torch.float32, 0.2, 0.2, 4, False, 0, "Random")
     buttons = [component for component in process.outputs if isinstance(component, gr.Button)
                and component.value in {"Export test metrics (all targets)", "Export evaluation rows (all targets)"}]
     assert len(buttons) == 2
@@ -345,7 +347,7 @@ def test_3d_processing_rejects_nonfinite_targets(workdir_3d, module, value):
     df.to_csv(path, index=False)
 
     result = module.on_process_data(
-        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, False, 0)
+        workdir_3d, "dataset.csv", "GRAPH_g3d", torch.float32, 0.25, 0.25, 4, False, 0)
 
     assert is_error(result[0]) and "non-finite" in result[0]
     assert result[2] is None
@@ -360,7 +362,7 @@ def test_3d_processing_rejects_multiple_targets(workdir_3d, module):
     df.to_csv(path, index=False)
 
     result = module.on_process_data(
-        workdir_3d, "dataset.csv", "g3d", torch.float32, 0.25, 0.25, 4, False, 0)
+        workdir_3d, "dataset.csv", "GRAPH_g3d", torch.float32, 0.25, 0.25, 4, False, 0)
 
     assert is_error(result[0]) and "target" in result[0]
     assert result[2] is None
@@ -475,7 +477,7 @@ def test_3d_regression_scales_before_casting_large_targets(workdir_3d, dtype):
     df["target"] = np.arange(len(df), dtype=float) + 100000
     df.to_csv(path, index=False)
     result = rg3.on_process_data(
-        workdir_3d, "dataset.csv", "g3d", dtype, 0.25, 0.25, 4, False, 0)
+        workdir_3d, "dataset.csv", "GRAPH_g3d", dtype, 0.25, 0.25, 4, False, 0)
     assert is_ok(result[0]), result[0]
     _, _, dataset, train_dl, val_dl, test_dl, scaler = result
     assert dataset[0].y.item() == 100000
@@ -530,3 +532,59 @@ def test_3d_scheduler_failure_keeps_completed_epoch_count(monkeypatch, module):
 
     assert is_error(result[0]) and "scheduler failure" in result[0]
     assert result[3] == len(result[4]) == len(result[5]) == 1
+
+
+@pytest.mark.parametrize("module", [bc3, rg3])
+def test_named_3d_runs_capture_seeds_save_load_and_export(workdir_3d, module):
+    processed = module.on_process_data(workdir_3d, "dataset.csv", "GRAPH_g3d", torch.float32,
+                                       0.25, 0.25, 4, False, 7)
+    assert is_ok(processed[0]), processed[0]
+    dataset, train_dl, _, test_dl = processed[2:6]
+    assert dataset.split_context["split_seed"] == 7
+    assert dataset.split_context["train_indices"] == list(train_dl.dataset.indices)
+    assert dataset.split_context["test_indices"] == list(test_dl.dataset.indices)
+    args = create_model_3d_args(dataset, "SchNet")
+    args[4] = 13
+    created = module.on_create_model(*args, model_name="spatial")
+    assert is_ok(created[0]), created[0]
+    model = created[-4]
+    assert model._run_context["model_seed"] == 13 and model._run_context["split_seed"] == 7
+    scaler_args = [processed[6]] if module is rg3 else []
+    assert is_ok(module.on_save_checkpoint(workdir_3d, "weights", model, 2, *scaler_args)[0])
+    relative = os.path.relpath(os.path.join(run_directory(model._run_context), "weights_2.ckpt"), workdir_3d)
+    assert relative in list_saved_models(workdir_3d, ".ckpt")
+    args[4] = 99
+    other = module.on_create_model(*args, model_name="changed_name")[-4]
+    loaded = module.on_load_checkpoint(workdir_3d, relative, other, [], [], 0, *scaler_args)
+    assert is_ok(loaded[0]), loaded[0]
+    assert other._run_context == model._run_context
+    rows = dataset.df.iloc[test_dl.dataset.indices].copy()
+    rows["target (Prediction)"] = rows["target"]
+    if module is bc3:
+        rows["target (Probability)"] = rows["target"] * 0.8 + 0.1
+    for callback, inputs in [(module.on_export_losses, ("losses", [0.1], [0.2])),
+                             (module.on_export_evaluation, ("evaluation", rows)),
+                             (module.on_export_metrics, ("metrics", rows, dataset)),
+                             (module.on_export_prediction, ("predictions", rows))]:
+        result = route_model_export(callback)(workdir_3d, *inputs, other)
+        assert is_ok(result[0]), result[0]
+        assert os.path.isfile(os.path.join(run_directory(model._run_context), inputs[0] + ".csv"))
+        assert not os.path.exists(os.path.join(workdir_3d, inputs[0] + ".csv"))
+    choices = module.on_content_list_change(workdir_3d, "dataset", "GRAPH_g3d", relative)
+    assert choices[2]["choices"] == ["GRAPH_g3d"] and relative in choices[4]["choices"]
+    other_split = module.on_process_data(workdir_3d, "dataset.csv", "GRAPH_g3d", torch.float32,
+                                         0.25, 0.25, 4, False, 8)
+    _, optimizer, scheduler, _ = module.on_create_optimizer(other, "SGD", 0.01, 1.0)
+    result = module.on_train(other, other_split[3], other_split[4], "cpu", torch.float32,
+                             *scaler_args, optimizer, scheduler, 1, 0, [], [], FakeProgress())
+    assert is_error(result[0]) and "original" in result[0] and result[3] == 0
+
+
+@pytest.mark.parametrize("module", [bc3, rg3])
+@pytest.mark.parametrize("seed", [None, 1.5, -1])
+def test_3d_invalid_model_seed_reports_an_error(module, seed):
+    args = create_model_3d_args(SimpleNamespace(), "SchNet")
+    args[4] = seed
+    result = module.on_create_model(*args)
+    assert is_error(result[0]) and "seed" in result[0].lower()
+    assert result[-4] is None

@@ -53,7 +53,7 @@ def test_listing_is_sorted_and_scoped_to_own_workflow(workflow):
 def test_opening_existing_working_directory_preserves_files(workflow):
     module, _, workflow_root = workflow
     working_directory = workflow_root / "existing"
-    graph_directory = working_directory / "graphs"
+    graph_directory = working_directory / "GRAPH_graphs"
     graph_directory.mkdir(parents=True)
     (working_directory / "dataset.csv").write_text("SMILES,target\nCCO,1\n")
     (graph_directory / "0.pt").write_bytes(b"existing graph")
@@ -61,7 +61,7 @@ def test_opening_existing_working_directory_preserves_files(workflow):
     result = module.on_open_working_directory("existing")
 
     assert result[-2] == str(working_directory)
-    assert sorted(result[-1]) == ["dataset.csv", "graphs"]
+    assert sorted(result[-1]) == ["GRAPH_graphs", "dataset.csv"]
     assert (working_directory / "dataset.csv").read_text() == "SMILES,target\nCCO,1\n"
     assert (graph_directory / "0.pt").read_bytes() == b"existing graph"
 

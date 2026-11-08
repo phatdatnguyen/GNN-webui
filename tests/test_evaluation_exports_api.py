@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 from types import SimpleNamespace
+from pathlib import Path
 
 import gradio as gr
 import pandas as pd
@@ -15,6 +16,7 @@ import binary_classification_3d as bc3
 import regression_hybrid as rg
 import regression_3d as rg3
 from evaluation_metrics import metrics_from_predictions
+from run_utils import make_run_context, make_split_context, run_directory
 
 
 CASES = [
@@ -40,7 +42,12 @@ def test_evaluation_exports_match_cached_results_and_clear_after_model_actions(
         return actual, outputs, ["CCO", "CCN", "CCC", "CCCC"]
 
     monkeypatch.setattr(module, "test", infer)
-    dataset = SimpleNamespace(target_column_name=targets[0], target_column_names=targets)
+    frame = pd.DataFrame({"SMILES": ["CCO", "CCN", "CCC", "CCCC"] * 2,
+                          **{target: actual[:, index].tolist() * 2 for index, target in enumerate(targets)}})
+    split = make_split_context(str(tmp_path), "dataset.csv", frame, [0, 1, 2, 3], [4, 5, 6, 7], 17, "Random")
+    dataset = SimpleNamespace(target_column_name=targets[0], target_column_names=targets, split_context=split)
+    context = make_run_context(split, "export_test", 42, module.__name__, "Linear")
+    run_path = Path(run_directory(context))
     with gr.Blocks() as blocks:
         builder()
     session = SessionState(blocks)
@@ -84,7 +91,9 @@ def test_evaluation_exports_match_cached_results_and_clear_after_model_actions(
         evaluation = callback_named("on_evaluate")
         export_buttons = evaluation.outputs[-2:]
         for action in ("on_create_model", "on_load_checkpoint", "on_train"):
-            arguments = dict(model=torch.nn.Linear(1, 1), dataset=dataset, test_dataloader=object(),
+            model = torch.nn.Linear(1, 1)
+            model._run_context = context
+            arguments = dict(model=model, dataset=dataset, test_dataloader=object(),
                              device="cpu", datatype=torch.float32)
             if task == "regression":
                 arguments["output_scaler"] = object()  # The inference stub already returns original units.
@@ -93,25 +102,26 @@ def test_evaluation_exports_match_cached_results_and_clear_after_model_actions(
             assert all(properties[button._id]["interactive"] for button in export_buttons)
             await call("on_export_metrics", dict(working_directory_path=str(tmp_path), file_name="metrics.csv"))
             await call("on_export_evaluation", dict(working_directory_path=str(tmp_path), file_name="evaluation.csv"))
-            pd.testing.assert_frame_equal(pd.read_csv(tmp_path / "evaluation.csv"), rows)
+            pd.testing.assert_frame_equal(pd.read_csv(run_path / "evaluation.csv"), rows)
             expected = metrics_from_predictions(task, rows, targets)
-            pd.testing.assert_frame_equal(pd.read_csv(tmp_path / "metrics.csv"), expected)
+            pd.testing.assert_frame_equal(pd.read_csv(run_path / "metrics.csv"), expected)
             assert set(expected["Target"]) == set(targets)
-            assert not (tmp_path / "metrics.csv.csv").exists()
+            assert not (run_path / "metrics.csv.csv").exists()
+            assert not (tmp_path / "metrics.csv").exists()
 
             # A failed model action can still discard a model or change some weights.
             # Its real UI wrapper must invalidate the results in the same response.
             mutation_args = ({"dataset": None} if action == "on_create_model"
                              else {"checkpoint_file_name": None} if action == "on_load_checkpoint"
                              else {"model": None})
-            # A 3D architecture can be constructed before a dataset is available.
-            await call(action, mutation_args, success=is_3d and action == "on_create_model")
+            # Named runs require a captured dataset split, including for 3D models.
+            await call(action, mutation_args, success=False)
             assert session[evaluation.outputs[1]._id] is None
             assert all(properties[button._id]["interactive"] is False for button in export_buttons)
-            exports_before = (tmp_path / "metrics.csv").read_bytes()
+            exports_before = (run_path / "metrics.csv").read_bytes()
             await call("on_export_metrics", success=False)
             await call("on_export_evaluation", success=False)
-            assert (tmp_path / "metrics.csv").read_bytes() == exports_before
+            assert (run_path / "metrics.csv").read_bytes() == exports_before
         assert len(inference_calls) == 3
 
     asyncio.run(run())

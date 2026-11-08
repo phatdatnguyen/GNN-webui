@@ -31,9 +31,9 @@ def fingerprint_workdir(tmp_path):
     pd.DataFrame({"SMILES": smiles}).to_csv(tmp_path / "prediction.csv", index=False)
     fingerprints = pd.DataFrame(features, columns=[f"Bit_{i}" for i in range(1, 9)])
     fingerprints.insert(0, "SMILES", smiles)
-    (tmp_path / "fps").mkdir()
-    fingerprints.to_csv(tmp_path / "fps" / "molecular_fingerprints.csv", index=False)
-    (tmp_path / "fps" / "fingerprint_config.json").write_text(json.dumps({
+    (tmp_path / "FP_fps").mkdir()
+    fingerprints.to_csv(tmp_path / "FP_fps" / "molecular_fingerprints.csv", index=False)
+    (tmp_path / "FP_fps" / "fingerprint_config.json").write_text(json.dumps({
         "name": "Morgan fingerprint", "radius": 2, "number_of_bits": 8,
     }))
     return tmp_path
@@ -42,7 +42,7 @@ def fingerprint_workdir(tmp_path):
 def processed(directory, task="classification", **kwargs):
     options = dict(test_ratio=0.25, random_seed=3)
     options.update(kwargs)
-    return ml.process_data(directory, f"{task}.csv", "fps", task, **options)
+    return ml.process_data(directory, f"{task}.csv", "FP_fps", task, **options)
 
 
 def quick_parameters(task, model_name):
@@ -73,7 +73,7 @@ MODELS = [(task, model_name) for task, names in ml.MODEL_NAMES.items() for model
 def test_every_model_fits_multi_target_evaluates_predicts_and_round_trips(fingerprint_workdir, task, model_name):
     split = processed(fingerprint_workdir, task)
     model = ml.fit_model(split, model_name, quick_parameters(task, model_name), random_seed=11)
-    prediction_data = ml.load_fingerprint_data(fingerprint_workdir, "prediction.csv", "fps", task,
+    prediction_data = ml.load_fingerprint_data(fingerprint_workdir, "prediction.csv", "FP_fps", task,
                                               require_targets=False)
     predictions = ml.predict(model, prediction_data)
     assert predictions["SMILES"].tolist() == prediction_data.df["SMILES"].tolist()
@@ -173,7 +173,7 @@ def test_scaffold_processing_is_reproducible_and_keeps_groups_together(fingerpri
 
 @pytest.mark.parametrize("task", ["classification", "regression"])
 def test_default_processing_reserves_twenty_percent_for_testing_only(fingerprint_workdir, task):
-    split = ml.process_data(fingerprint_workdir, f"{task}.csv", "fps", task)
+    split = ml.process_data(fingerprint_workdir, f"{task}.csv", "FP_fps", task)
     assert len(split.test_indices) == int(0.2 * len(split.data))
     assert len(split.val_indices) == 0
     assert len(split.train_indices) == len(split.data) - len(split.test_indices)
@@ -273,7 +273,7 @@ def test_prediction_requires_consistent_fingerprint_settings(fingerprint_workdir
 
 
 def test_legacy_metadata_free_fingerprints_remain_usable(fingerprint_workdir):
-    (fingerprint_workdir / "fps" / "fingerprint_config.json").unlink()
+    (fingerprint_workdir / "FP_fps" / "fingerprint_config.json").unlink()
     split = processed(fingerprint_workdir)
     assert split.data.fingerprint_config is None
     model = ml.fit_model(split, "Random Forest", {"n_estimators": 5})
@@ -290,7 +290,7 @@ def test_legacy_metadata_free_fingerprints_remain_usable(fingerprint_workdir):
     ("wrong_config_width", "configuration"),
 ])
 def test_malformed_or_misaligned_input_is_rejected(fingerprint_workdir, mutation, match):
-    fp_path = fingerprint_workdir / "fps" / "molecular_fingerprints.csv"
+    fp_path = fingerprint_workdir / "FP_fps" / "molecular_fingerprints.csv"
     csv_path = fingerprint_workdir / "classification.csv"
     fingerprints = pd.read_csv(fp_path)
     dataset = pd.read_csv(csv_path)
@@ -312,9 +312,9 @@ def test_malformed_or_misaligned_input_is_rejected(fingerprint_workdir, mutation
     elif mutation == "missing_smiles":
         dataset = dataset.drop(columns="SMILES")
     elif mutation == "malformed_config":
-        (fingerprint_workdir / "fps" / "fingerprint_config.json").write_text("{bad")
+        (fingerprint_workdir / "FP_fps" / "fingerprint_config.json").write_text("{bad")
     elif mutation == "wrong_config_width":
-        (fingerprint_workdir / "fps" / "fingerprint_config.json").write_text(json.dumps({
+        (fingerprint_workdir / "FP_fps" / "fingerprint_config.json").write_text(json.dumps({
             "name": "Morgan fingerprint", "radius": 2, "number_of_bits": 16,
         }))
     fingerprints.to_csv(fp_path, index=False)
@@ -326,10 +326,10 @@ def test_malformed_or_misaligned_input_is_rejected(fingerprint_workdir, mutation
 
 
 def test_unlabeled_prediction_data_is_allowed_but_not_training_data(fingerprint_workdir):
-    data = ml.load_fingerprint_data(fingerprint_workdir, "prediction.csv", "fps", "classification", False)
+    data = ml.load_fingerprint_data(fingerprint_workdir, "prediction.csv", "FP_fps", "classification", False)
     assert data.y is None and not data.target_names
     with pytest.raises(ValueError, match="target column"):
-        ml.load_fingerprint_data(fingerprint_workdir, "prediction.csv", "fps", "classification")
+        ml.load_fingerprint_data(fingerprint_workdir, "prediction.csv", "FP_fps", "classification")
 
 
 @pytest.mark.parametrize("task", ["classification", "regression"])
@@ -419,7 +419,7 @@ def test_overlapping_or_missing_partition_indices_are_rejected(fingerprint_workd
 
 def test_path_traversal_is_rejected(fingerprint_workdir):
     with pytest.raises(ValueError, match="dataset file name"):
-        ml.load_fingerprint_data(fingerprint_workdir, "../classification.csv", "fps", "classification")
+        ml.load_fingerprint_data(fingerprint_workdir, "../classification.csv", "FP_fps", "classification")
     with pytest.raises(ValueError, match="fingerprint directory"):
         ml.load_fingerprint_data(fingerprint_workdir, "classification.csv", "../fps", "classification")
 

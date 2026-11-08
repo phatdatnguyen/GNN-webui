@@ -4,6 +4,7 @@ These are the functions wired to buttons, so they return status HTML plus compon
 updates rather than raising. The tests assert on that contract.
 """
 import os
+from copy import deepcopy
 from types import SimpleNamespace
 
 import numpy as np
@@ -14,19 +15,21 @@ import torch
 import binary_classification_hybrid as bc
 import regression_hybrid as rg
 from conftest import FakeProgress, SMILES, create_model_args, is_error, is_ok
+from gnn_run_ui import route_model_export
+from run_utils import run_directory, list_saved_models
 
 
 def process_classification(workdir, load_data="Both", dimensionality_reduction=False,
                            test_ratio=0.25, val_ratio=0.25, batch_size=4, shuffle=False, seed=0):
     return bc.on_process_data(
-        workdir, "dataset.csv", load_data, "graphs", "fps", torch.float32,
+        workdir, "dataset.csv", load_data, "GRAPH_graphs", "FP_fps", torch.float32,
         dimensionality_reduction, 0.0, 4, test_ratio, val_ratio, batch_size, shuffle, seed,
     )
 
 
 def process_regression(workdir, load_data="Both", dimensionality_reduction=False, shuffle=False):
     return rg.on_process_data(
-        workdir, "dataset.csv", load_data, "graphs", "fps", torch.float32,
+        workdir, "dataset.csv", load_data, "GRAPH_graphs", "FP_fps", torch.float32,
         dimensionality_reduction, 0.0, 4, 0.25, 0.25, 4, shuffle, 0,
     )
 
@@ -332,7 +335,7 @@ def test_model_input_width_follows_pca_when_enabled(classification_workdir):
         classification_workdir, "Both", dimensionality_reduction=True)
     result = bc.on_create_model(*create_model_args(dataset, "GCN", vt, pca))
     assert is_ok(result[0]), result[0]
-    assert result[-4].mlp[0].in_features == pca.n_components_
+    assert result[-4].fingerprint_encoder[0].in_features == pca.n_components_
 
 
 # ------------------------------------------------------------------------------ training
@@ -600,7 +603,7 @@ def test_save_checkpoint_without_a_model_reports_an_error(classification_workdir
 def test_prediction_covers_every_input_molecule(trained_classifier):
     t = trained_classifier
     status, prediction_dataset, dataloader, predict_btn = bc.on_process_prediction_data(
-        t["workdir"], "dataset.csv", t["dataset"], "graphs", "fps", torch.float32, 4)
+        t["workdir"], "dataset.csv", t["dataset"], "GRAPH_graphs", "FP_fps", torch.float32, 4)
     assert is_ok(status)
 
     status, prediction_df, export_btn = bc.on_predict(
@@ -609,7 +612,7 @@ def test_prediction_covers_every_input_molecule(trained_classifier):
 
     assert is_ok(status)
     assert len(prediction_df) == len(SMILES)
-    assert prediction_df["SMILES"].tolist() == SMILES
+    assert prediction_df["SMILES"].tolist() == t["dataset"].df["SMILES"].tolist()
     assert prediction_df["target (Prediction)"].isin([0, 1]).all()
 
 
@@ -813,7 +816,7 @@ def test_create_optimizer_rejects_an_unknown_optimizer(classification_workdir):
 
 def test_content_listing_handles_a_missing_working_directory():
     """Regression: reachable after a rejected directory name, and raised TypeError."""
-    result = bc.on_content_list_change(None, "dataset", "graphs", "fps", "checkpoint")
+    result = bc.on_content_list_change(None, "dataset", "GRAPH_graphs", "FP_fps", "checkpoint")
     assert result[0].empty
     assert len(result) == 9
 
@@ -854,7 +857,7 @@ def test_working_directory_listing_sorts_newest_first(classification_workdir):
     os.utime(new, (1_900_000_000, 1_900_000_000))     # 2030
 
     contents_df = bc.on_content_list_change(classification_workdir, "dataset",
-                                            "graphs", "fps", "checkpoint")[0]
+                                            "GRAPH_graphs", "FP_fps", "checkpoint")[0]
     order = contents_df["File"].tolist()
     assert order.index("new.csv") < order.index("old.csv")
 
@@ -862,10 +865,10 @@ def test_working_directory_listing_sorts_newest_first(classification_workdir):
 def test_working_directory_listing_classifies_entries(classification_workdir):
     open(os.path.join(classification_workdir, "model.ckpt"), "w").close()
     contents_df = bc.on_content_list_change(classification_workdir, "dataset",
-                                            "graphs", "fps", "checkpoint")[0]
+                                            "GRAPH_graphs", "FP_fps", "checkpoint")[0]
     by_name = contents_df.set_index("File")["Type"]
 
-    assert by_name["graphs"] == "Directory"
+    assert by_name["GRAPH_graphs"] == "Directory"
     assert by_name["dataset.csv"] == "Data file"
     assert by_name["model.ckpt"] == "Checkpoint file"
 
@@ -889,7 +892,7 @@ def test_open_working_directory_creates_the_directory(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("module", [bc, rg])
 @pytest.mark.parametrize("mode,graph_dir,fp_dir", [
-    ("Graphs", "graphs", None), ("Molecular fingerprints", None, "fps"),
+    ("Graphs", "GRAPH_graphs", None), ("Molecular fingerprints", None, "FP_fps"),
 ])
 def test_single_input_mode_ignores_unselected_directory(classification_workdir, module, mode, graph_dir, fp_dir):
     result = module.on_process_data(
@@ -919,7 +922,7 @@ def test_processing_rejects_nonfinite_targets(classification_workdir, module, ta
     df.loc[0, "target"] = target
     df.to_csv(path, index=False)
     result = module.on_process_data(
-        classification_workdir, "dataset.csv", "Both", "graphs", "fps", torch.float32,
+        classification_workdir, "dataset.csv", "Both", "GRAPH_graphs", "FP_fps", torch.float32,
         False, 0.0, 4, 0.25, 0.25, 4, False, 0)
     assert is_error(result[0])
     assert result[3] is None
@@ -929,7 +932,7 @@ def test_processing_rejects_nonfinite_targets(classification_workdir, module, ta
 @pytest.mark.parametrize("actual_tab,selected_tab", [("GAT", "GCN"), ("GCN", "GAT")])
 def test_training_and_inference_follow_created_model_after_tab_change(classification_workdir, module, actual_tab, selected_tab):
     processed = module.on_process_data(
-        classification_workdir, "dataset.csv", "Both", "graphs", "fps", torch.float32,
+        classification_workdir, "dataset.csv", "Both", "GRAPH_graphs", "FP_fps", torch.float32,
         False, 0.0, 4, 0.25, 0.25, 4, False, 0)
     dataset, train_dl, val_dl, test_dl, vt, pca = processed[3:9]
     scaler_args = [processed[9]] if module is rg else []
@@ -953,7 +956,7 @@ def test_training_and_inference_follow_created_model_after_tab_change(classifica
 @pytest.mark.parametrize("module", [bc, rg])
 def test_bfloat16_fingerprints_with_pca_train_evaluate_and_predict(classification_workdir, module):
     processed = module.on_process_data(
-        classification_workdir, "dataset.csv", "Molecular fingerprints", None, "fps", torch.bfloat16,
+        classification_workdir, "dataset.csv", "Molecular fingerprints", None, "FP_fps", torch.bfloat16,
         True, 0.0, 4, 0.25, 0.25, 4, False, 0)
     assert is_ok(processed[0]), processed[0]
     dataset, train_dl, val_dl, test_dl, vt, pca = processed[3:9]
@@ -1000,7 +1003,7 @@ def test_incompatible_checkpoint_preserves_all_model_weights(classification_work
 
 def test_regression_reports_an_empty_test_split(regression_workdir):
     processed = rg.on_process_data(
-        regression_workdir, "dataset.csv", "Graphs", "graphs", None, torch.float32,
+        regression_workdir, "dataset.csv", "Graphs", "GRAPH_graphs", None, torch.float32,
         False, 0.0, 4, 0.0, 0.25, 4, False, 0)
     dataset, test_dl, scaler = processed[3], processed[6], processed[9]
     model = rg.on_create_model(*create_model_args(dataset, "GCN"))[-4]
@@ -1013,7 +1016,7 @@ def test_regression_reports_an_empty_test_split(regression_workdir):
 @pytest.mark.parametrize("module", [bc, rg])
 def test_scheduler_failure_preserves_completed_epoch_count(classification_workdir, module):
     processed = module.on_process_data(
-        classification_workdir, "dataset.csv", "Graphs", "graphs", None, torch.float32,
+        classification_workdir, "dataset.csv", "Graphs", "GRAPH_graphs", None, torch.float32,
         False, 0.0, 4, 0.25, 0.25, 4, False, 0)
     dataset, train_dl, val_dl = processed[3:6]
     scaler_args = [processed[9]] if module is rg else []
@@ -1034,7 +1037,7 @@ def test_scheduler_failure_preserves_completed_epoch_count(classification_workdi
 @pytest.mark.parametrize("module", [bc, rg])
 def test_nonfinite_loss_is_rejected_before_optimizer_updates(classification_workdir, module, monkeypatch):
     processed = module.on_process_data(
-        classification_workdir, "dataset.csv", "Graphs", "graphs", None, torch.float32,
+        classification_workdir, "dataset.csv", "Graphs", "GRAPH_graphs", None, torch.float32,
         False, 0.0, 4, 0.25, 0.25, 4, False, 0)
     dataset, train_dl, val_dl = processed[3:6]
     scaler_args = [processed[9]] if module is rg else []
@@ -1058,7 +1061,7 @@ def test_regression_scales_large_targets_before_reducing_precision(regression_wo
     df["value"] = 100000.0 + np.arange(len(df)) * 0.125
     df.to_csv(path, index=False)
     processed = rg.on_process_data(
-        regression_workdir, "dataset.csv", "Molecular fingerprints", None, "fps", datatype,
+        regression_workdir, "dataset.csv", "Molecular fingerprints", None, "FP_fps", datatype,
         False, 0.0, 4, 0.25, 0.25, 4, False, 0)
     assert is_ok(processed[0]), processed[0]
     dataset, val_dl, scaler = processed[3], processed[5], processed[9]
@@ -1094,3 +1097,141 @@ def test_regression_refuses_broadcasting_mismatched_target_width(regression_work
     assert "output shape" in result[0]
     assert result[3] == 0
     assert all(torch.equal(p, q) for p, q in zip(model.parameters(), before))
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+def test_named_hybrid_runs_capture_separate_seeds_and_route_all_results(request, module):
+    workdir = request.getfixturevalue("classification_workdir" if module is bc else "regression_workdir")
+    processed = module.on_process_data(workdir, "dataset.csv", "Molecular fingerprints", "GRAPH_graphs", "FP_fps",
+                                       torch.float32, True, 0.0, 4, 0.25, 0.25, 4, False, 7)
+    assert is_ok(processed[0]), processed[0]
+    dataset, train_dl, _, test_dl, vt, pca = processed[3:9]
+    assert dataset.split_context["split_seed"] == 7 and pca.random_state == 7
+    assert dataset.split_context["train_indices"] == list(train_dl.dataset.indices)
+    assert dataset.split_context["test_indices"] == list(test_dl.dataset.indices)
+    args = create_model_args(dataset, "GCN", vt, pca)
+    args[4] = 13
+    created = module.on_create_model(*args, model_name="experiment")
+    assert is_ok(created[0]), created[0]
+    model = created[-4]
+    context = deepcopy(model._run_context)
+    assert context["model_seed"] == 13 and context["split_seed"] == 7
+    assert context["parameters"]["pca"]["random_state"] == 7
+    assert context["parameters"]["feature_sources"]["fingerprint_directory"] == "FP_fps"
+    assert not os.path.exists(run_directory(context))  # Creation records identity without writing outputs.
+    scaler_args = [processed[9]] if module is rg else []
+    saved = module.on_save_checkpoint(workdir, "weights", model, 2, vt, pca, *scaler_args)
+    assert is_ok(saved[0]), saved[0]
+    checkpoint = os.path.join(run_directory(context), "weights_2.ckpt")
+    assert os.path.isfile(checkpoint) and not os.path.exists(os.path.join(workdir, "weights_2.ckpt"))
+    relative = os.path.relpath(checkpoint, workdir)
+    assert relative in list_saved_models(workdir, ".ckpt")
+    args[4] = 99
+    other = module.on_create_model(*args, model_name="edited_selection")[-4]
+    assert not torch.equal(next(model.parameters()), next(other.parameters()))
+    loaded = module.on_load_checkpoint(workdir, relative, other, [], [], 0, vt, pca, *scaler_args)
+    assert is_ok(loaded[0]), loaded[0]
+    assert other._run_context == context
+
+    rows = dataset.df.iloc[test_dl.dataset.indices].copy()
+    for target in dataset.target_column_names:
+        rows[f"{target} (Prediction)"] = rows[target]
+        if module is bc:
+            rows[f"{target} (Probability)"] = rows[target] * 0.8 + 0.1
+    exports = [(module.on_export_losses, ("losses", [0.2], [0.3])),
+               (module.on_export_evaluation, ("evaluation", rows)),
+               (module.on_export_metrics, ("metrics", rows, dataset)),
+               (module.on_export_prediction, ("predictions", rows))]
+    for callback, inputs in exports:
+        status, _ = route_model_export(callback)(workdir, *inputs, other)
+        assert is_ok(status), status
+        assert os.path.isfile(os.path.join(run_directory(context), inputs[0] + ".csv"))
+        assert not os.path.exists(os.path.join(workdir, inputs[0] + ".csv"))
+    choices = module.on_content_list_change(workdir, "dataset", "GRAPH_graphs", "FP_fps", relative)
+    assert choices[2]["choices"] == ["GRAPH_graphs"] and choices[3]["choices"] == ["FP_fps"]
+    assert relative in choices[5]["choices"]
+
+
+def test_legacy_checkpoint_import_keeps_named_run_and_marks_unknown_seed(classification_workdir):
+    processed = process_classification(classification_workdir, "Molecular fingerprints")
+    dataset = processed[3]
+    args = create_model_args(dataset, "GCN")
+    legacy = bc.on_create_model(*args)[-4]
+    assert is_ok(bc.on_save_checkpoint(classification_workdir, "legacy", legacy, 0, None, None)[0])
+    args[4] = 17
+    imported = bc.on_create_model(*args, model_name="imported")[-4]
+    loaded = bc.on_load_checkpoint(classification_workdir, "legacy_0.ckpt", imported, [], [], 0, None, None)
+    assert is_ok(loaded[0]) and "unknown" in loaded[0]
+    assert imported._run_context["model_seed"] == 17
+    assert imported._run_context["legacy_checkpoint"] is True
+    assert imported._run_context["initialization_seed_verified"] is False
+    assert is_ok(bc.on_save_checkpoint(classification_workdir, "imported", imported, 0, None, None)[0])
+    assert os.path.isfile(os.path.join(run_directory(imported._run_context), "imported_0.ckpt"))
+
+
+def test_named_model_rejects_different_split_and_bad_checkpoint_metadata(classification_workdir):
+    processed = process_classification(classification_workdir, "Molecular fingerprints")
+    dataset = processed[3]
+    model = bc.on_create_model(*create_model_args(dataset, "GCN"), model_name="named")[-4]
+    other = process_classification(classification_workdir, "Molecular fingerprints", seed=1)
+    result = bc.on_evaluate(model, other[3], other[6], "cpu", torch.float32, "GCN", "GCNConv", None, None)
+    assert is_error(result[0]) and "original" in result[0]
+    _, optimizer, scheduler, _ = bc.on_create_optimizer(model, "SGD", 0.01, 1.0)
+    trained = bc.on_train(model, other[3], other[4], other[5], "cpu", torch.float32,
+                          optimizer, scheduler, 1, 0, [], [], "GCN", "GCNConv", None, None, FakeProgress())
+    assert is_error(trained[0]) and trained[3] == 0
+    before = {name: value.clone() for name, value in model.state_dict().items()}
+    bad_context = deepcopy(model._run_context)
+    bad_context["model_seed"] = 999  # This no longer matches the recorded run identity.
+    torch.save({"model_class": type(model).__name__, "run_context": bad_context,
+                "state_dict": {name: value + 1 for name, value in before.items()}},
+               os.path.join(classification_workdir, "bad_metadata.ckpt"))
+    loaded = bc.on_load_checkpoint(classification_workdir, "bad_metadata.ckpt", model, [0.1], [0.2], 3, None, None)
+    assert is_error(loaded[0])
+    assert all(torch.equal(value, before[name]) for name, value in model.state_dict().items())
+    assert loaded[2:5] == ([0.1], [0.2], 3)
+
+
+@pytest.mark.parametrize("module", [bc, rg])
+@pytest.mark.parametrize("seed", [None, 1.5, -1])
+def test_hybrid_invalid_model_seed_reports_an_error(module, seed):
+    args = create_model_args(SimpleNamespace(), "GCN")
+    args[4] = seed
+    result = module.on_create_model(*args)
+    assert is_error(result[0]) and "seed" in result[0].lower()
+    assert result[-4] is None
+
+
+def test_named_run_rejects_changed_fingerprints_in_the_same_folder(classification_workdir):
+    first = process_classification(classification_workdir, "Molecular fingerprints")
+    original = bc.on_create_model(*create_model_args(first[3], "GCN"), model_name="reused")[-4]
+    assert is_ok(bc.on_save_checkpoint(classification_workdir, "weights", original, 0, None, None)[0])
+    checkpoint_path = os.path.join(run_directory(original._run_context), "weights_0.ckpt")
+    with open(checkpoint_path, "rb") as stream:
+        before = stream.read()
+    fingerprint_path = os.path.join(classification_workdir, "FP_fps", "molecular_fingerprints.csv")
+    frame = pd.read_csv(fingerprint_path)
+    frame.iloc[0, 1] = 1 - frame.iloc[0, 1]
+    frame.to_csv(fingerprint_path, index=False)
+    second = process_classification(classification_workdir, "Molecular fingerprints")
+    evaluated = bc.on_evaluate(original, second[3], second[6], "cpu", torch.float32,
+                                "GCN", "GCNConv", None, None)
+    assert is_error(evaluated[0]) and "features" in evaluated[0]
+    changed = bc.on_create_model(*create_model_args(second[3], "GCN"), model_name="reused")[-4]
+    assert changed._run_context["parameters"]["feature_sources"]["fingerprint_hash"] != original._run_context["parameters"]["feature_sources"]["fingerprint_hash"]
+    result = bc.on_save_checkpoint(classification_workdir, "weights", changed, 0, None, None)
+    assert is_error(result[0]) and "another model name" in result[0]
+    with open(checkpoint_path, "rb") as stream:
+        assert stream.read() == before
+
+
+def test_named_checkpoint_rejects_different_dropout_before_copying_weights(classification_workdir):
+    dataset = process_classification(classification_workdir)[3]
+    original = bc.on_create_model(*create_model_args(dataset, "GCN", gcn_dropout=0.1), model_name="dropout")[-4]
+    assert is_ok(bc.on_save_checkpoint(classification_workdir, "weights", original, 0, None, None)[0])
+    other = bc.on_create_model(*create_model_args(dataset, "GCN", gcn_dropout=0.7), model_name="different")[-4]
+    before = {name: value.clone() for name, value in other.state_dict().items()}
+    filename = os.path.relpath(os.path.join(run_directory(original._run_context), "weights_0.ckpt"), classification_workdir)
+    result = bc.on_load_checkpoint(classification_workdir, filename, other, [], [], 0, None, None)
+    assert is_error(result[0]) and "architecture" in result[0].lower()
+    assert all(torch.equal(value, before[name]) for name, value in other.state_dict().items())

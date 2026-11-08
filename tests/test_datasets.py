@@ -13,7 +13,7 @@ from conftest import SMILES
 def make_dataset(workdir, load_data="Both", datatype=torch.float32):
     return MolecularDataset(
         os.path.join(workdir, "dataset.csv"), load_data,
-        os.path.join(workdir, "graphs"), os.path.join(workdir, "fps"), datatype,
+        os.path.join(workdir, "GRAPH_graphs"), os.path.join(workdir, "FP_fps"), datatype,
     )
 
 
@@ -30,7 +30,7 @@ def test_length_ignores_unrelated_files_in_the_graph_directory(classification_wo
     dataset = make_dataset(classification_workdir)
     before = len(dataset)
 
-    graph_dir = os.path.join(classification_workdir, "graphs")
+    graph_dir = os.path.join(classification_workdir, "GRAPH_graphs")
     open(os.path.join(graph_dir, "notes.txt"), "w").write("scratch")
     os.makedirs(os.path.join(graph_dir, "subdir"), exist_ok=True)
 
@@ -96,7 +96,7 @@ def test_regression_targets_retain_precision_before_scaling(tmp_path, datatype, 
 
     targets = [100000.125, 100000.25]
     pd.DataFrame({"SMILES": ["CCO", "CCN"], "target": targets}).to_csv(tmp_path / "dataset.csv", index=False)
-    graph_dir = tmp_path / "graphs"
+    graph_dir = tmp_path / "GRAPH_graphs"
     graph_dir.mkdir()
     for i, smiles in enumerate(["CCO", "CCN"]):
         torch.save(Data(smiles=smiles), graph_dir / f"{i}.pt")
@@ -128,11 +128,11 @@ def test_multi_target_y_shape(tmp_path, progress):
     source = tmp_path / "source.csv"
     pd.DataFrame({"smiles": ["CCO", "CCN"], "a": [1, 0], "b": [0, 1]}).to_csv(source, index=False)
     utils.process_dataset_file(str(source), str(tmp_path), "dataset", "smiles", "a,b")
-    utils.extract_graphs(str(tmp_path), "dataset.csv", "graphs",
+    utils.extract_graphs(str(tmp_path), "dataset.csv", "GRAPH_graphs",
                          "MolGraphConvFeaturizer", torch.float32, progress)
 
     dataset = MolecularDataset(str(tmp_path / "dataset.csv"), "Graphs",
-                               str(tmp_path / "graphs"), "", torch.float32)
+                               str(tmp_path / "GRAPH_graphs"), "", torch.float32)
     assert dataset.num_outputs == 2
     assert dataset[0].y.shape == (1, 2)
     assert dataset.target_column_names == ["a", "b"]
@@ -140,7 +140,7 @@ def test_multi_target_y_shape(tmp_path, progress):
 
 def test_legacy_float_edge_index_is_cast_on_load(classification_workdir):
     """Graphs written before the dtype fix must still load."""
-    path = os.path.join(classification_workdir, "graphs", "0.pt")
+    path = os.path.join(classification_workdir, "GRAPH_graphs", "0.pt")
     data = torch.load(path, weights_only=False)
     data.edge_index = data.edge_index.float()
     torch.save(data, path)
@@ -181,7 +181,7 @@ def test_rejects_fewer_graphs_than_dataset_rows(classification_workdir):
 
 def test_rejects_fingerprints_shifted_against_the_dataset(classification_workdir):
     """Same row count, wrong order - a count check alone would pass this."""
-    fp_path = os.path.join(classification_workdir, "fps", "molecular_fingerprints.csv")
+    fp_path = os.path.join(classification_workdir, "FP_fps", "molecular_fingerprints.csv")
     fp = pd.read_csv(fp_path)
     pd.concat([fp.iloc[3:], fp.iloc[:3]]).reset_index(drop=True).to_csv(fp_path, index=False)
 
@@ -214,14 +214,15 @@ def test_manifest_catches_a_shift_confined_to_the_middle(classification_workdir)
 
 def test_extraction_writes_a_manifest(classification_workdir):
     import utils
-    manifest = utils.read_graph_manifest(os.path.join(classification_workdir, "graphs"))
-    assert manifest == SMILES
+    manifest = utils.read_graph_manifest(os.path.join(classification_workdir, "GRAPH_graphs"))
+    imported = pd.read_csv(os.path.join(classification_workdir, "dataset.csv"))
+    assert manifest == imported["SMILES"].tolist()
 
 
 def test_alignment_check_falls_back_when_there_is_no_manifest(classification_workdir):
     """Graph directories written before the manifest existed must still load."""
     import utils
-    os.remove(os.path.join(classification_workdir, "graphs", utils.GRAPH_MANIFEST))
+    os.remove(os.path.join(classification_workdir, "GRAPH_graphs", utils.GRAPH_MANIFEST))
     assert len(make_dataset(classification_workdir, "Graphs")) == len(SMILES)
 
     path = os.path.join(classification_workdir, "dataset.csv")
@@ -232,7 +233,7 @@ def test_alignment_check_falls_back_when_there_is_no_manifest(classification_wor
 
 
 def test_rejects_a_gap_in_the_graph_numbering(classification_workdir):
-    os.remove(os.path.join(classification_workdir, "graphs", "4.pt"))
+    os.remove(os.path.join(classification_workdir, "GRAPH_graphs", "4.pt"))
     with pytest.raises(ValueError):
         make_dataset(classification_workdir, "Graphs")
 
@@ -270,13 +271,13 @@ def test_3d_dataset_rejects_multiple_target_columns(tmp_path):
     pd.DataFrame({"SMILES": ["CCO"], "a": [1], "b": [0]}).to_csv(path, index=False)
 
     with pytest.raises(ValueError, match="only one target"):
-        MolecularDataset3D(str(path), str(tmp_path / "graphs"), torch.float32)
+        MolecularDataset3D(str(path), str(tmp_path / "GRAPH_graphs"), torch.float32)
 
 @pytest.mark.slow
 def test_3d_dataset_basics(workdir_3d):
     from conftest import SMILES_3D
     dataset = MolecularDataset3D(os.path.join(workdir_3d, "dataset.csv"),
-                                 os.path.join(workdir_3d, "g3d"), torch.float32)
+                                 os.path.join(workdir_3d, "GRAPH_g3d"), torch.float32)
     assert len(dataset) == len(SMILES_3D)
     assert dataset.num_outputs == 1
     assert dataset.target_column_name == "target"
@@ -292,16 +293,16 @@ def test_3d_dataset_detects_desync(workdir_3d):
     path = os.path.join(workdir_3d, "dataset.csv")
     pd.read_csv(path).drop(index=2).to_csv(path, index=False)
     with pytest.raises(ValueError):
-        MolecularDataset3D(path, os.path.join(workdir_3d, "g3d"), torch.float32)
+        MolecularDataset3D(path, os.path.join(workdir_3d, "GRAPH_g3d"), torch.float32)
 
 
 @pytest.mark.slow
 def test_3d_legacy_float_z_is_cast_on_load(workdir_3d):
-    path = os.path.join(workdir_3d, "g3d", "0.pt")
+    path = os.path.join(workdir_3d, "GRAPH_g3d", "0.pt")
     data = torch.load(path, weights_only=False)
     data.z = data.z.float()
     torch.save(data, path)
 
     dataset = MolecularDataset3D(os.path.join(workdir_3d, "dataset.csv"),
-                                 os.path.join(workdir_3d, "g3d"), torch.float32)
+                                 os.path.join(workdir_3d, "GRAPH_g3d"), torch.float32)
     assert dataset[0].z.dtype == torch.int64

@@ -126,7 +126,7 @@ def test_custom_layers_reject_zero_total_output_width(layer_name):
 def test_chebconv_gets_a_filter_size(graph):
     """Regression: ChebConv's required K argument was missing, so it failed to construct."""
     model = build_custom("ChebConv", 2)
-    assert model.gcn[0].__class__.__name__ == "ChebConv"
+    assert model.graph_encoder[0].__class__.__name__ == "ChebConv"
     assert run(model, "ChebConv", graph).shape == (2, N_TARGETS)
     assert models.CHEB_CONV_K >= 1
 
@@ -230,7 +230,7 @@ def test_mlp_model_rejects_zero_output_width():
         MLPModel(MLP[0], MLP[1], MLP[2], 0, *PRED, N_TARGETS)
 
 
-def test_predictor_block_can_be_skipped():
+def test_prediction_head_hidden_layers_can_be_skipped():
     """predictor_n_layers has a minimum of 0 in the UI."""
     model = MLPModel(MLP[0], MLP[1], MLP[2], MLP[3], 32, 0, N_TARGETS)
     model.eval()
@@ -252,10 +252,10 @@ def test_gradients_flow_through_both_branches(graph):
     out = model(graph["x"], graph["edge_index"], graph["edge_attr"], graph["batch"], graph["fp"])
     out.sum().backward()
 
-    gcn_grads = [p.grad for p in model.gcn.parameters() if p.grad is not None]
-    mlp_grads = [p.grad for p in model.mlp.parameters() if p.grad is not None]
-    assert gcn_grads and any(g.abs().sum() > 0 for g in gcn_grads)
-    assert mlp_grads and any(g.abs().sum() > 0 for g in mlp_grads)
+    graph_encoder_grads = [p.grad for p in model.graph_encoder.parameters() if p.grad is not None]
+    fingerprint_encoder_grads = [p.grad for p in model.fingerprint_encoder.parameters() if p.grad is not None]
+    assert graph_encoder_grads and any(g.abs().sum() > 0 for g in graph_encoder_grads)
+    assert fingerprint_encoder_grads and any(g.abs().sum() > 0 for g in fingerprint_encoder_grads)
 
 
 @pytest.mark.parametrize("layer_name", ["GENConv", "TransformerConv"])
@@ -295,6 +295,24 @@ def test_single_atom_training_batch_uses_running_normalization(layer_name, n_lay
 def test_edge_feature_dispatch_uses_model_type(name):
     model = build_custom(name, 1) if name in ALL_CUSTOM_LAYERS else TOP_LEVEL[name][0]()
     assert models.model_requires_edge_attr(model) == (name in EDGE_ATTR_LAYERS or name in {"GAT", "AttentiveFP"})
+
+
+@pytest.mark.parametrize("name", [*ALL_CUSTOM_LAYERS, *TOP_LEVEL, "MLP"])
+def test_model_architecture_and_checkpoint_keys_use_encoder_names(name):
+    if name == "MLP":
+        model = MLPModel(*MLP, *PRED, N_TARGETS)
+        expected = {"fingerprint_encoder", "prediction_head"}
+    else:
+        model = build_custom(name, 2) if name in ALL_CUSTOM_LAYERS else TOP_LEVEL[name][0]()
+        expected = {"graph_encoder", "fingerprint_encoder", "prediction_head"}
+    registered = dict(model.named_children())
+    keys = {key.split(".", 1)[0] for key in model.state_dict()}
+    assert expected <= registered.keys()
+    assert expected <= keys
+    assert {"gcn", "mlp", "predictor"}.isdisjoint(registered)
+    assert {"gcn", "mlp", "predictor"}.isdisjoint(keys)
+    for module_name in expected:
+        assert f"({module_name}):" in repr(model)
 
 
 @pytest.mark.parametrize("layer_name", ["GENConv", "TransformerConv"])

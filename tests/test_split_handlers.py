@@ -38,10 +38,10 @@ def split_workdir(tmp_path):
     fingerprint_df = pd.DataFrame(np.eye(len(smiles), dtype=int),
                                   columns=[f"Bit_{i}" for i in range(len(smiles))])
     fingerprint_df.insert(0, "SMILES", smiles)
-    (tmp_path / "fps").mkdir()
-    fingerprint_df.to_csv(tmp_path / "fps" / "molecular_fingerprints.csv", index=False)
+    (tmp_path / "FP_fps").mkdir()
+    fingerprint_df.to_csv(tmp_path / "FP_fps" / "molecular_fingerprints.csv", index=False)
 
-    graph_dir = tmp_path / "graphs"
+    graph_dir = tmp_path / "GRAPH_graphs"
     graph_dir.mkdir()
     (graph_dir / "smiles.txt").write_text("\n".join(smiles))
     for index, smi in enumerate(smiles):
@@ -53,10 +53,10 @@ def split_workdir(tmp_path):
 
 def process(module, workdir, method="Scaffold", seed=17, reduction=False, shuffle=False):
     if module in (bc, rg):
-        args = [str(workdir), "dataset.csv", "Molecular fingerprints", None, "fps",
+        args = [str(workdir), "dataset.csv", "Molecular fingerprints", None, "FP_fps",
                 torch.float32, reduction, 0.0, 2, 0.25, 0.25, 2, shuffle, seed]
     else:
-        args = [str(workdir), "dataset.csv", "graphs", torch.float32,
+        args = [str(workdir), "dataset.csv", "GRAPH_graphs", torch.float32,
                 0.25, 0.25, 2, shuffle, seed]
     # None invokes the legacy positional signature, which must retain Random behavior.
     return module.on_process_data(*args, *([] if method is None else [method]))
@@ -123,7 +123,7 @@ def test_scaffold_feature_transformers_fit_only_training_molecules(split_workdir
     assert is_ok(result[0]), result[0]
     train_indices = split_indices(module, result)[0]
     selector, pca = result[7:9]
-    fingerprints = pd.read_csv(split_workdir / "fps" / "molecular_fingerprints.csv").drop(columns="SMILES")
+    fingerprints = pd.read_csv(split_workdir / "FP_fps" / "molecular_fingerprints.csv").drop(columns="SMILES")
     train_features = fingerprints.iloc[train_indices].to_numpy()
 
     np.testing.assert_allclose(selector.variances_, train_features.var(axis=0))
@@ -172,14 +172,14 @@ def test_too_few_scaffolds_reports_how_to_choose_another_split(split_workdir, mo
     df = pd.read_csv(dataset_path)
     df["SMILES"] = smiles
     df.to_csv(dataset_path, index=False)
-    fingerprint_path = split_workdir / "fps" / "molecular_fingerprints.csv"
+    fingerprint_path = split_workdir / "FP_fps" / "molecular_fingerprints.csv"
     fingerprints = pd.read_csv(fingerprint_path)
     fingerprints["SMILES"] = smiles
     fingerprints.to_csv(fingerprint_path, index=False)
-    (split_workdir / "graphs" / "smiles.txt").write_text("\n".join(smiles))
+    (split_workdir / "GRAPH_graphs" / "smiles.txt").write_text("\n".join(smiles))
     for index, smi in enumerate(smiles):
         torch.save(Data(z=torch.tensor([6]), pos=torch.zeros(1, 3), smiles=smi),
-                   split_workdir / "graphs" / f"{index}.pt")
+                   split_workdir / "GRAPH_graphs" / f"{index}.pt")
 
     result = process(module, split_workdir)
 

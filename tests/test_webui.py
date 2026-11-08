@@ -1,4 +1,5 @@
 """Tests for app wiring: the Gradio Blocks tree and the port reservation helper."""
+import inspect
 import socket
 
 import gradio as gr
@@ -64,6 +65,72 @@ def test_each_tab_builds(label, builder):
                          if getattr(callback.fn, "__name__", None) == "on_process_data"]
     assert len(process_callbacks) == 1
     assert process_callbacks[0].inputs[-1] is split_radio
+
+    split_seed = next(component for component in blocks.blocks.values()
+                      if isinstance(component, gr.Slider) and component.label == "Data split random seed")
+    model_seed = next(component for component in blocks.blocks.values()
+                      if isinstance(component, gr.Slider) and component.label == "Model random seed")
+    model_name = next(component for component in blocks.blocks.values()
+                      if isinstance(component, gr.Textbox) and component.label == "Model name")
+    assert split_seed is not model_seed
+    assert _ancestor(split_seed, gr.Accordion).label == "Load and process data"
+    assert split_seed in process_callbacks[0].inputs and model_seed not in process_callbacks[0].inputs
+    assert _ancestor(model_name, gr.Row) is _ancestor(model_seed, gr.Row)
+    creation = next(callback for callback in blocks.fns.values()
+                    if getattr(callback.fn, "__name__", None) ==
+                    ("on_fit" if "Classical ML Models" in label else "on_create_model"))
+    assert model_seed in creation.inputs and split_seed not in creation.inputs
+    assert model_name in creation.inputs
+    create_button = next(component for component in blocks.blocks.values()
+                         if isinstance(component, gr.Button) and component.value ==
+                         ("Fit model" if "Classical ML Models" in label else "Create model"))
+    control_row = _ancestor(model_name, gr.Row)
+    button_row = _ancestor(create_button, gr.Row)
+    if create_button.parent is control_row.parent:
+        assert control_row.parent.children.index(control_row) + 1 == control_row.parent.children.index(create_button)
+    else:
+        assert button_row.parent is control_row.parent
+        assert control_row.parent.children.index(control_row) + 1 == control_row.parent.children.index(button_row)
+    if "Classical ML Models" not in label:
+        batch = next(component for component in blocks.blocks.values()
+                     if getattr(component, "label", None) == "Batch size")
+        assert _ancestor(split_seed, gr.Column) is _ancestor(batch, gr.Column)
+        # Gradio may wrap input components in a shared Form.
+        assert split_seed._id < batch._id
+    similarity_button = next(component for component in blocks.blocks.values()
+                             if isinstance(component, gr.Button) and component.value == "Calculate training–test similarity")
+    assert _ancestor(similarity_button, gr.Accordion).label == "Load and process data"
+    assert _ancestor(similarity_button, gr.Group) is not None
+
+    cleanup_labels = ["Canonicalize SMILES", "Remove duplicates", "Remove salt"]
+    cleanup_controls = []
+    for cleanup_label in cleanup_labels:
+        matches = [component for component in blocks.blocks.values()
+                   if isinstance(component, gr.Checkbox) and component.label == cleanup_label]
+        assert len(matches) == 1
+        assert matches[0].value is True
+        cleanup_controls.append(matches[0])
+    cleanup_row = _ancestor(cleanup_controls[0], gr.Row)
+    assert all(_ancestor(control, gr.Row) is cleanup_row for control in cleanup_controls)
+    load_buttons = [component for component in blocks.blocks.values()
+                    if isinstance(component, gr.Button) and component.value == "Load dataset"]
+    assert len(load_buttons) == 1
+    load_button = load_buttons[0]
+    assert cleanup_row.parent is load_button.parent
+    siblings = load_button.parent.children
+    assert siblings.index(cleanup_row) + 1 == siblings.index(load_button)
+    upload_callbacks = [callback for callback in blocks.fns.values()
+                        if getattr(callback.fn, "__name__", None) == "on_upload_dataset"]
+    assert len(upload_callbacks) == 1
+    upload = upload_callbacks[0]
+    assert upload.inputs[-3:] == cleanup_controls
+    parameters = list(inspect.signature(upload.fn).parameters.values())
+    assert [parameter.name for parameter in parameters[-3:]] == [
+        "canonicalize_smiles", "remove_duplicates", "remove_salt"]
+    assert all(parameter.default is True for parameter in parameters[-3:])
+    if "Classical ML Models" in label:
+        assert parameters[5].name == "training_source"
+        assert isinstance(upload.inputs[5], gr.State)
 
     accordions = [component for component in blocks.blocks.values() if isinstance(component, gr.Accordion)]
     for title in ("Model evaluation", "Make predictions"):
