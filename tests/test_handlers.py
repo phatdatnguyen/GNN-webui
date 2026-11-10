@@ -70,20 +70,6 @@ def test_process_data_succeeds_for_each_input_mode(classification_workdir, load_
     assert all(dl is not None for dl in (train_dl, val_dl, test_dl))
 
 
-def test_process_data_splits_add_up(classification_workdir):
-    _, _, _, dataset, train_dl, val_dl, test_dl = process_classification(
-        classification_workdir, test_ratio=0.25, val_ratio=0.25)[:7]
-    total = sum(len(dl.dataset) for dl in (train_dl, val_dl, test_dl))
-    assert total == len(dataset)
-    assert len(test_dl.dataset) == int(len(dataset) * 0.25)
-
-
-def test_process_data_is_reproducible_for_a_fixed_seed(classification_workdir):
-    first = process_classification(classification_workdir)[4].dataset.indices
-    second = process_classification(classification_workdir)[4].dataset.indices
-    assert list(first) == list(second)
-
-
 def test_process_data_rejects_non_binary_targets(classification_workdir):
     path = os.path.join(classification_workdir, "dataset.csv")
     df = pd.read_csv(path)
@@ -128,13 +114,6 @@ def test_process_data_error_path_disables_the_create_button(classification_workd
     assert target_dd is not None
 
 
-def test_dimensionality_reduction_is_fitted_when_fingerprints_are_loaded(classification_workdir):
-    _, _, _, _, _, _, _, vt, pca = process_classification(
-        classification_workdir, "Both", dimensionality_reduction=True)
-    assert vt is not None and pca is not None
-    assert pca.n_components_ == 4
-
-
 def test_stale_dimensionality_reduction_flag_is_ignored_without_fingerprints(classification_workdir):
     """Regression: the checkbox is only hidden - not reset - when switching to Graphs, and
     the handler then tried to read a fingerprint file that may not exist."""
@@ -148,6 +127,7 @@ def test_dimensionality_reduction_is_fitted_on_the_training_split_only(classific
     """Fitting PCA on the whole dataset would leak test information into training."""
     _, _, _, dataset, train_dl, _, _, vt, pca = process_classification(
         classification_workdir, "Both", dimensionality_reduction=True)
+    assert vt is not None and pca.n_components_ == 4
     assert pca.n_samples_ == len(train_dl.dataset)
 
 
@@ -657,116 +637,6 @@ def test_exports_reject_unsafe_file_names(trained_classifier, name):
     assert is_error(status)
 
 
-def test_export_evaluation_writes_the_dataframe(trained_classifier):
-    t = trained_classifier
-    _, eval_df, _, _ = bc.on_evaluate(t["model"], t["dataset"], t["test_dl"], "cpu",
-                                   torch.float32, "Custom", "GCNConv", t["vt"], t["pca"])
-    status, _ = bc.on_export_evaluation(t["workdir"], "evaluation", eval_df)
-    assert is_ok(status)
-
-    written = pd.read_csv(os.path.join(t["workdir"], "evaluation.csv"))
-    assert list(written.columns) == list(eval_df.columns)
-    assert len(written) == len(eval_df)
-
-
-def cached_export_rows(module):
-    if module is bc:
-        return pd.DataFrame({
-            "SMILES": ["CCO", "CCN", "CCC", "CCCl"],
-            "first": [0, 1, 0, 1], "first (Prediction)": [0, 1, 0, 1],
-            "first (Probability)": [0.1, 0.9, 0.2, 0.8],
-            "second": [0, 1, 0, 1], "second (Prediction)": [1, 1, 0, 0],
-            "second (Probability)": [0.8, 0.9, 0.1, 0.2],
-        })
-    return pd.DataFrame({
-        "SMILES": ["CCO", "CCN", "CCC", "CCCl"],
-        "first": [1, 2, 3, 4], "first (Prediction)": [1, 2, 3, 4],
-        "second": [10, 20, 30, 40], "second (Prediction)": [11, 18, 33, 36],
-    })
-
-
-@pytest.mark.parametrize("module", [bc, rg])
-@pytest.mark.parametrize("name", ["test_metrics", "test_metrics.csv"])
-def test_metrics_export_uses_all_cached_targets_without_inference(module, name, tmp_path, monkeypatch):
-    rows = cached_export_rows(module)
-    dataset = SimpleNamespace(target_column_names=["first", "second"])
-
-    def unexpected_call(*args, **kwargs):
-        raise AssertionError("Exports must use cached rows without model inference or selected-target plots")
-
-    monkeypatch.setattr(module, "test", unexpected_call)
-    monkeypatch.setattr(module, "on_target_column_change", unexpected_call)
-    status, contents = module.on_export_metrics(str(tmp_path), name, rows, dataset)
-    assert is_ok(status), status
-    assert contents == ["test_metrics.csv"]
-    metrics = pd.read_csv(tmp_path / "test_metrics.csv")
-    assert list(metrics) == ["Target", "Metric", "Value"]
-    assert metrics["Target"].unique().tolist() == ["first", "second"]
-    values = metrics.set_index(["Target", "Metric"])["Value"]
-    if module is bc:
-        assert len(metrics) == 20
-        assert values["first", "Accuracy"] == 1
-        assert values["second", "Accuracy"] == 0.5
-        assert values["second", "ROC-AUC score"] == 0.75
-    else:
-        assert len(metrics) == 8
-        assert metrics["Metric"].tolist() == ["MAE", "MSE", "RMSE", "R²"] * 2
-        assert values["first", "MSE"] == 0
-        assert values["second", "MAE"] == 2.5
-        assert values["second", "MSE"] == 7.5
-        assert values["second", "RMSE"] == pytest.approx(np.sqrt(7.5))
-        assert values["second", "R²"] == pytest.approx(0.94)
-
-
-@pytest.mark.parametrize("module", [bc, rg])
-@pytest.mark.parametrize("name", ["evaluation", "evaluation.csv"])
-def test_evaluation_export_preserves_every_cached_row_and_column(module, name, tmp_path):
-    rows = cached_export_rows(module)
-    status, contents = module.on_export_evaluation(str(tmp_path), name, rows)
-    assert is_ok(status), status
-    assert contents == ["evaluation.csv"]
-    written = pd.read_csv(tmp_path / "evaluation.csv")
-    pd.testing.assert_frame_equal(written, rows)
-
-
-@pytest.mark.parametrize("module", [bc, rg])
-@pytest.mark.parametrize("kind", ["metrics", "evaluation"])
-@pytest.mark.parametrize("name", ["../escape", "/etc/passwd", "..", "", "<bad>"])
-def test_test_result_exports_reject_unsafe_names_and_preserve_directory_state(module, kind, name, tmp_path):
-    rows = cached_export_rows(module)
-    if kind == "metrics":
-        result = module.on_export_metrics(str(tmp_path), name, rows,
-                                          SimpleNamespace(target_column_names=["first", "second"]))
-    else:
-        result = module.on_export_evaluation(str(tmp_path), name, rows)
-    assert is_error(result[0])
-    if name == "<bad>":
-        assert "&lt;bad&gt;" in result[0] and "<bad>" not in result[0]
-    assert result[1] == {"__type__": "update"}
-    assert not list(tmp_path.iterdir())
-
-
-@pytest.mark.parametrize("module", [bc, rg])
-@pytest.mark.parametrize("rows", [None, pd.DataFrame()])
-def test_test_result_exports_require_evaluation_rows(module, rows, tmp_path):
-    dataset = SimpleNamespace(target_column_names=["first", "second"])
-    for result in [module.on_export_metrics(str(tmp_path), "metrics", rows, dataset),
-                   module.on_export_evaluation(str(tmp_path), "evaluation", rows)]:
-        assert is_error(result[0])
-        assert result[1] == {"__type__": "update"}
-    assert not list(tmp_path.iterdir())
-
-
-@pytest.mark.parametrize("module", [bc, rg])
-def test_test_result_exports_report_missing_working_directory(module, tmp_path):
-    rows = cached_export_rows(module)
-    directory = str(tmp_path / "missing")
-    dataset = SimpleNamespace(target_column_names=["first", "second"])
-    assert is_error(module.on_export_metrics(directory, "metrics", rows, dataset)[0])
-    assert is_error(module.on_export_evaluation(directory, "evaluation", rows)[0])
-    assert is_error(module.on_export_metrics(str(tmp_path), "metrics", rows, None)[0])
-
-
 @pytest.mark.parametrize("module", [bc, rg])
 def test_evaluation_rejects_overlapping_target_and_prediction_column_names(module):
     dataset = SimpleNamespace(target_column_names=["target", "target (Prediction)"])
@@ -792,8 +662,7 @@ def test_nonfinite_model_outputs_fail_evaluation_and_disable_both_exports(module
     assert result[2]["interactive"] is False and result[3]["interactive"] is False
 
 
-def test_export_without_data_reports_an_error(classification_workdir):
-    assert is_error(bc.on_export_evaluation(classification_workdir, "evaluation", None)[0])
+def test_prediction_export_without_data_reports_an_error(classification_workdir):
     assert is_error(bc.on_export_prediction(classification_workdir, "prediction", None)[0])
 
 
@@ -871,23 +740,6 @@ def test_working_directory_listing_classifies_entries(classification_workdir):
     assert by_name["GRAPH_graphs"] == "Directory"
     assert by_name["dataset.csv"] == "Data file"
     assert by_name["model.ckpt"] == "Checkpoint file"
-
-
-def test_open_working_directory_rejects_traversal(tmp_path, monkeypatch):
-    monkeypatch.setattr(bc, "DATA_DIR", str(tmp_path / "Data"))
-    result = bc.on_open_working_directory("../escape")
-
-    assert result[-2] is None                      # no working directory path handed back
-    assert not (tmp_path / "escape").exists()
-
-
-def test_open_working_directory_creates_the_directory(tmp_path, monkeypatch):
-    data_dir = tmp_path / "Data"
-    monkeypatch.setattr(bc, "DATA_DIR", str(data_dir))
-    result = bc.on_open_working_directory("my_run")
-
-    assert result[-2] == os.path.join(str(data_dir), "Classification", "my_run")
-    assert (data_dir / "Classification" / "my_run").is_dir()
 
 
 @pytest.mark.parametrize("module", [bc, rg])

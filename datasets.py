@@ -85,6 +85,75 @@ def _check_fingerprints_match_dataset(fingerprint_df, df, molecular_fingerprint_
 DEFAULT_GRAPH_CACHE_BYTES = 128 * 1024 * 1024
 
 
+def _can_clone_graph_tensors(graph):
+    """Only independent, ordinary feature tensors use the faster copy path."""
+    storages = {}
+    for _, value in graph:
+        if isinstance(value, torch.Tensor):
+            if (value.requires_grad or value.layout != torch.strided
+                    or not value.is_contiguous() or value.storage_offset()):
+                return False
+            storage = value.untyped_storage()
+            if value.numel() * value.element_size() != storage.nbytes():
+                return False
+            identity = (storage.data_ptr(), storage.nbytes())
+            if identity in storages and storages[identity] != id(value):
+                return False
+            storages[identity] = id(value)
+        elif not isinstance(value, (str, bytes, int, float, bool, type(None))):
+            # Nested metadata can contain other views into tensor storage.
+            return False
+    return True
+
+
+def _copy_graph(graph, clone_tensors=None):
+    """Copy graph values without Torch's slower storage-deepcopy path.
+
+    Tensor-storage aliases, views and arbitrary metadata use the original full
+    deepcopy semantics. Standard extracted graphs have only independent feature
+    tensors and a SMILES string, so their eligibility is recorded once on caching.
+    """
+    if clone_tensors is None:
+        clone_tensors = _can_clone_graph_tensors(graph)
+    if not clone_tensors:
+        return copy.deepcopy(graph)
+    tensors = {}
+    for key, value in graph:
+        if isinstance(value, torch.Tensor) and id(value) not in tensors:
+            tensors[id(value)] = value.clone()
+    return copy.deepcopy(graph, tensors)
+
+
+def _gather_fingerprints(values, indices, datatype):
+    """Avoid waking the whole Torch CPU thread pool for a modest batch cast."""
+    selected = values[indices]
+    numpy_datatype = {torch.float16: np.float16, torch.float32: np.float32,
+                      torch.float64: np.float64}.get(datatype)
+    if numpy_datatype is not None:
+        # Match Torch's overflow-to-infinity conversion without NumPy warnings.
+        with np.errstate(over="ignore"):
+            return torch.from_numpy(selected.astype(numpy_datatype, copy=False))
+    source = torch.from_numpy(selected)
+    result = torch.empty(source.shape, dtype=datatype)
+    source, destination = source.reshape(-1), result.reshape(-1)
+    # NumPy cannot represent bfloat16. Small copies retain Torch's exact casting
+    # rules without triggering parallel-copy overhead on high-core-count hosts.
+    for start in range(0, source.numel(), 16384):
+        destination[start:start + 16384].copy_(source[start:start + 16384])
+    return result
+
+
+def _gather_tensor_rows(values, rows):
+    """Keep large CPU gathers from paying high-core-count thread-pool overhead."""
+    if rows.numel() * values.shape[1] <= 16384:
+        return values.index_select(0, rows)
+    if values.dtype == torch.bfloat16:
+        # Select the stored bits without rounding through a different float type.
+        selected = values.view(torch.int16).numpy()[rows.numpy()]
+        return torch.from_numpy(selected).view(torch.bfloat16)
+    return torch.from_numpy(values.numpy()[rows.numpy()])
+
+
 def _graph_memory_bytes(graph):
     """Count tensor storage plus Python objects, including shared-storage views once.
 
@@ -152,7 +221,7 @@ class _PreparedDataset(Dataset):
             raise ValueError("Graph cache size must be a nonnegative integer number of bytes.")
         self.graph_cache_bytes = int(budget)
         while self._graph_cache and self._graph_cache_size > self.graph_cache_bytes:
-            _, (_, size) = self._graph_cache.popitem(last=False)
+            _, (_, size, _) = self._graph_cache.popitem(last=False)
             self._graph_cache_size -= size
 
     def clear_cache(self):
@@ -175,9 +244,9 @@ class _PreparedDataset(Dataset):
         # survive epochs. Keep the shared parent cache for the default worker=0 path.
         cache_enabled = self.graph_cache_bytes > 0 and get_worker_info() is None
         if cache_enabled and idx in self._graph_cache:
-            graph, size = self._graph_cache.pop(idx)
-            self._graph_cache[idx] = graph, size
-            return copy.deepcopy(graph)
+            graph, size, clone_tensors = self._graph_cache.pop(idx)
+            self._graph_cache[idx] = graph, size, clone_tensors
+            return _copy_graph(graph, clone_tensors)
         graph = torch.load(os.path.join(self.graph_directory_path, f"{idx}.pt"),
                            weights_only=False, map_location="cpu")
         for name in ("edge_index", "z"):
@@ -188,12 +257,50 @@ class _PreparedDataset(Dataset):
             size = _graph_memory_bytes(graph)
             if size <= self.graph_cache_bytes:
                 while self._graph_cache and self._graph_cache_size + size > self.graph_cache_bytes:
-                    _, (_, removed_size) = self._graph_cache.popitem(last=False)
+                    _, (_, removed_size, _) = self._graph_cache.popitem(last=False)
                     self._graph_cache_size -= removed_size
-                self._graph_cache[idx] = graph, size
+                clone_tensors = _can_clone_graph_tensors(graph)
+                self._graph_cache[idx] = graph, size, clone_tensors
                 self._graph_cache_size += size
-                return copy.deepcopy(graph)
+                return _copy_graph(graph, clone_tensors)
         return graph
+
+    def _graph_for_row(self, idx):
+        return self._load_graph(idx)
+
+    def __getitems__(self, indices):
+        """Gather numeric columns once per batch while returning normal samples.
+
+        PyTorch and its Subset wrapper use this supported batched-fetch method.
+        Advanced indexing owns new storage, including when indices repeat, so no
+        returned sample can modify cached numerical inputs or another row's values.
+        The ordinary ``__getitem__`` API stays available for model summaries and
+        integrations that request individual molecules.
+        """
+        indices = [self._row_index(index) for index in indices]
+        if not indices:
+            return []
+        rows = torch.tensor(indices, dtype=torch.long)
+        targets = _gather_tensor_rows(self._targets, rows) if self._targets.shape[1] else None
+        fingerprint_values = getattr(self, "fingerprint_values", None)
+        fingerprints = (_gather_fingerprints(fingerprint_values, indices, self.datatype)
+                        if fingerprint_values is not None else None)
+        prepared_fp = (_gather_tensor_rows(self._fp_prepared, rows)
+                       if self._fp_prepared is not None else None)
+        prepared_y = (_gather_tensor_rows(self._y_prepared, rows)
+                      if self._y_prepared is not None else None)
+        samples = []
+        for offset, index in enumerate(indices):
+            data = self._graph_for_row(index)
+            data.y = targets[offset:offset + 1] if targets is not None else None
+            if fingerprints is not None:
+                data.fp = fingerprints[offset:offset + 1]
+            if prepared_fp is not None:
+                data.fp_prepared = prepared_fp[offset:offset + 1]
+            if prepared_y is not None:
+                data.y_prepared = prepared_y[offset:offset + 1]
+            samples.append(data)
+        return samples
 
     def _attach_targets(self, data, idx):
         data.y = self._targets[idx:idx + 1].clone() if self._targets.shape[1] else None
@@ -295,18 +402,17 @@ class MolecularDataset(_PreparedDataset):
 
     def __getitem__(self, idx):
         idx = self._row_index(idx)
-        if self.load_data == 'Graphs':
-            data = self._load_graph(idx)
-        elif self.load_data == 'Molecular fingerprints':
-            data = Data(x = None, edge_index = None, edge_attr = None)
-            data.smiles = self._smiles[idx]
-        else:  # Both
-            data = self._load_graph(idx)
+        data = self._graph_for_row(idx)
         if self.fingerprint_values is not None:
             data.fp = torch.from_numpy(self.fingerprint_values[idx:idx + 1]).to(self.datatype)
         if self._fp_prepared is not None:
             data.fp_prepared = self._fp_prepared[idx:idx + 1].clone()
         return self._attach_targets(data, idx)
+
+    def _graph_for_row(self, idx):
+        if self.load_data == 'Molecular fingerprints':
+            return Data(smiles=self._smiles[idx])
+        return self._load_graph(idx)
 
     def _feature_dimensions(self):
         if self._graph_dimensions is None:

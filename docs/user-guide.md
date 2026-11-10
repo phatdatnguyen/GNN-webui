@@ -147,6 +147,10 @@ saved files. Closing or refreshing the browser normally releases its session; sa
 export anything you need first. GNN prediction tables preview 200 rows, while CSV
 exports contain every prediction.
 
+**Model training** also offers **Use fused CUDA optimizer** for float32 CUDA Adam
+and AdamW. It is off by default; enable it before creating the optimizer to compare
+performance on your hardware. Small rounding differences are possible.
+
 ### Separate data and model seeds
 
 **Data split random seed** is in the split controls of **Load and process data**,

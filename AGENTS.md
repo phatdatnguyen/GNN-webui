@@ -258,6 +258,10 @@ source. Train/validation/test Subsets share a bounded CPU graph cache (128 MiB b
 default, 0 disables it). Cached graphs are copied before returning samples, and the
 budget accounts for tensor storage and Python objects, not total application RAM.
 Spawned workers do not receive or maintain copies of this graph cache.
+The optional PyTorch `__getitems__` path gathers fingerprints/targets once per batch;
+it returns ordinary independent samples and respects nested Subsets and repeated
+indices. Ordinary graph tensors use faster clones; shared storage, views, gradients,
+and custom metadata retain full deepcopy behavior. Keep both retrieval paths equivalent.
 
 `prepare_dataset` prepares PCA/variance-filtered fingerprints and scaled targets in
 chunks after fitting on training rows only. It hashes actual fitted transformer state
@@ -272,6 +276,15 @@ spawn, bounded prefetch and nonpersistent workers; validate shutdown on error as
 as completion. Training accumulates detached weighted loss on-device and reads it once
 per epoch, while retaining the finite-loss check before backward. Do not introduce
 per-batch garbage collection or CUDA cache clearing.
+
+Hybrid wrappers that inherit `_GraphCountModel` accept optional `num_graphs` for
+pooling. The handlers use `graph_count_kwargs` to supply CPU loader metadata only to
+those wrappers; direct callers and third-party models retain their existing signatures.
+Validation checks finite loss once at the epoch boundary, while training retains its
+pre-backward batch check. `training_utils.create_optimizer` implements the optional,
+default-off fused CUDA Adam/AdamW path for float32 parameters. Unsupported configurations
+retain standard updates. No parameter keys, checkpoint architecture names, or precision
+settings change with these optimizations.
 
 The training loader shuffles each epoch, seeded from the data split random seed so runs stay
 reproducible; the "Shuffle training data each epoch" checkbox turns it off for a fixed

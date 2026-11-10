@@ -76,6 +76,10 @@ def test_every_model_fits_multi_target_evaluates_predicts_and_round_trips(finger
     prediction_data = ml.load_fingerprint_data(fingerprint_workdir, "prediction.csv", "FP_fps", task,
                                               require_targets=False)
     predictions = ml.predict(model, prediction_data)
+    # Reuse this fit for the reproducibility check instead of fitting the same
+    # estimator twice again in a separate test for every catalogue entry.
+    repeated = ml.fit_model(split, model_name, quick_parameters(task, model_name), random_seed=11)
+    pd.testing.assert_frame_equal(ml.predict(repeated, prediction_data), predictions)
     assert predictions["SMILES"].tolist() == prediction_data.df["SMILES"].tolist()
     assert len(model.pipelines) == 2
     assert model.pipelines[0] is not model.pipelines[1]
@@ -99,15 +103,6 @@ def test_every_model_fits_multi_target_evaluates_predicts_and_round_trips(finger
     restored = ml.load_model(checkpoint, task)
     pd.testing.assert_frame_equal(ml.predict(restored, prediction_data), predictions)
     pd.testing.assert_frame_equal(ml.evaluate_model(restored, split), ml.evaluate_model(model, split))
-
-
-@pytest.mark.parametrize("task,model_name", MODELS)
-def test_same_seed_reproduces_model_predictions(fingerprint_workdir, task, model_name):
-    split = processed(fingerprint_workdir, task)
-    parameters = quick_parameters(task, model_name)
-    first = ml.fit_model(split, model_name, parameters, random_seed=11)
-    second = ml.fit_model(split, model_name, parameters, random_seed=11)
-    pd.testing.assert_frame_equal(ml.predict(first, split.data), ml.predict(second, split.data))
 
 
 @pytest.mark.parametrize("task,model_name", [

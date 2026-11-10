@@ -83,13 +83,14 @@ def build_custom(layer_name, n_layers, n_gcn_outputs=N_OUT, n_mlp_outputs=MLP[3]
     return ctor(*args)
 
 
-def run(model, layer_name, graph):
+def run(model, layer_name, graph, num_graphs=None):
     model.eval()
+    options = models.graph_count_kwargs(model, num_graphs) if num_graphs is not None else {}
     with torch.no_grad():
         if layer_name in EDGE_ATTR_LAYERS:
             return model(graph["x"], graph["edge_index"], graph["edge_attr"],
-                         graph["batch"], graph["fp"])
-        return model(graph["x"], graph["edge_index"], graph["batch"], graph["fp"])
+                         graph["batch"], graph["fp"], **options)
+        return model(graph["x"], graph["edge_index"], graph["batch"], graph["fp"], **options)
 
 
 # ------------------------------------------------------------------- custom conv layers
@@ -103,6 +104,8 @@ def test_every_custom_layer_builds_and_runs(layer_name, n_layers, graph):
     out = run(model, layer_name, graph)
     assert out.shape == (2, N_TARGETS)
     assert torch.isfinite(out).all()
+    # Supplying the CPU loader's graph count must not alter pooling or weights.
+    torch.testing.assert_close(run(model, layer_name, graph, num_graphs=2), out)
 
 
 @pytest.mark.parametrize("layer_name", ALL_CUSTOM_LAYERS)
@@ -151,9 +154,11 @@ def test_top_level_models_build_and_run(name, graph):
     model.eval()
     with torch.no_grad():
         if needs_edge_attr:
-            out = model(graph["x"], graph["edge_index"], graph["edge_attr"], graph["batch"], graph["fp"])
+            args = (graph["x"], graph["edge_index"], graph["edge_attr"], graph["batch"], graph["fp"])
         else:
-            out = model(graph["x"], graph["edge_index"], graph["batch"], graph["fp"])
+            args = (graph["x"], graph["edge_index"], graph["batch"], graph["fp"])
+        out = model(*args)
+        torch.testing.assert_close(model(*args, **models.graph_count_kwargs(model, 2)), out)
     assert out.shape == (2, N_TARGETS)
     assert torch.isfinite(out).all()
 

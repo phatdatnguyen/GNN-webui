@@ -15,6 +15,7 @@ import binary_classification_hybrid as bc
 import binary_classification_3d as bc3
 import regression_hybrid as rg
 import regression_3d as rg3
+from conftest import is_error
 from evaluation_metrics import metrics_from_predictions
 from run_utils import make_run_context, make_split_context, run_directory
 
@@ -25,6 +26,37 @@ CASES = [
     (rg, rg.regression_hybrid_tab_content, "regression", False),
     (rg3, rg3.regression_3d_tab_content, "regression", True),
 ]
+
+
+@pytest.mark.parametrize("module,builder,task,is_3d", CASES, ids=[case[0].__name__ for case in CASES])
+@pytest.mark.parametrize("invalid", ["rows", "directory", "targets", "filename"])
+def test_export_handlers_report_errors_without_changing_directory_state(
+        tmp_path, module, builder, task, is_3d, invalid):
+    """Check each handler boundary; shared-writer tests own filename/empty variants."""
+    rows = pd.DataFrame({"SMILES": ["CCO", "CCN"], "assay": [0, 1],
+                         "assay (Prediction)": [0, 1]})
+    if task == "classification":
+        rows["assay (Probability)"] = [0.1, 0.9]
+    dataset = SimpleNamespace(target_column_name="assay", target_column_names=["assay"])
+    workdir, name = str(tmp_path), "results"
+    if invalid == "rows":
+        rows = None
+    elif invalid == "directory":
+        workdir = str(tmp_path / "missing")
+    elif invalid == "targets":
+        dataset = None
+    else:
+        name = "<unsafe>/file"
+
+    responses = [module.on_export_metrics(workdir, name, rows, dataset)]
+    if invalid != "targets":
+        responses.append(module.on_export_evaluation(workdir, name, rows))
+    for status, directory_update in responses:
+        assert is_error(status), status
+        assert directory_update == gr.update()
+        if invalid == "filename":
+            assert "&lt;unsafe&gt;" in status and "<unsafe>" not in status
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("module,builder,task,is_3d", CASES, ids=[case[0].__name__ for case in CASES])

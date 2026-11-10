@@ -56,13 +56,20 @@ def test_result_export_rejects_absent_rows(tmp_path, frame):
     assert not list(tmp_path.iterdir())
 
 
-def test_result_export_requires_open_directory_and_safe_name(tmp_path):
+def test_result_export_requires_open_directory(tmp_path):
     frame = pd.DataFrame({"target": [1]})
     for directory in (None, str(tmp_path / "missing")):
         with pytest.raises(ValueError, match="working directory"):
             utils.export_result_csv(directory, "results", frame)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("name", ["../escape", "/etc/passwd", "..", "", "<bad>", "<unsafe>/file"])
+def test_result_export_rejects_unsafe_filenames(tmp_path, name):
+    # Exhaustive filename variants belong to the shared writer. Workflow tests
+    # separately verify that each handler turns its failures into safe UI updates.
     with pytest.raises(ValueError, match="export file name"):
-        utils.export_result_csv(str(tmp_path), "../outside", frame)
+        utils.export_result_csv(str(tmp_path), name, pd.DataFrame({"target": [1]}))
     assert not list(tmp_path.iterdir())
 
 
@@ -336,16 +343,11 @@ def test_extract_graphs_writes_one_file_per_molecule(classification_workdir):
     assert utils.list_graph_files(os.path.join(classification_workdir, "GRAPH_graphs")) == list(range(len(SMILES)))
 
 
-def test_extract_graphs_stores_edge_index_as_long(classification_workdir):
-    """Regression: edge_index used to be saved with the model dtype. Under float16 that
-    silently corrupts every node index above 2048 once batches are collated."""
-    data = torch.load(os.path.join(classification_workdir, "GRAPH_graphs", "0.pt"), weights_only=False)
-    assert data.edge_index.dtype == torch.int64
-
-
 @pytest.mark.parametrize("datatype", [torch.float16, torch.float32, torch.float64])
 def test_extract_graphs_feature_dtype_follows_setting_but_edge_index_does_not(
         tmp_path, datatype, progress):
+    """Regression: edge_index used to be saved with the model dtype. Under float16 that
+    silently corrupts every node index above 2048 once batches are collated."""
     source = _source(tmp_path, ["CCO", "c1ccccc1"], [1, 0])
     utils.process_dataset_file(source, str(tmp_path), "dataset", "smiles", "target")
     status = utils.extract_graphs(str(tmp_path), "dataset.csv", "GRAPH_graphs",

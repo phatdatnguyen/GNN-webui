@@ -140,6 +140,7 @@ def inputs_and_target(batch, mode, device):
 
 def train_epoch(model, optimizer, loader, mode, device, task):
     import torch
+    from models import graph_count_kwargs
 
     synchronize(device)
     started = time.perf_counter()
@@ -160,7 +161,7 @@ def train_epoch(model, optimizer, loader, mode, device, task):
         transfer_host += time.perf_counter() - transferring
         computing = time.perf_counter()
         optimizer.zero_grad()
-        predictions = model(*inputs).reshape_as(target)
+        predictions = model(*inputs, **graph_count_kwargs(model, batch.num_graphs)).reshape_as(target)
         loss = (torch.nn.functional.binary_cross_entropy_with_logits(predictions, target)
                 if task == "classification" else torch.nn.functional.mse_loss(predictions, target))
         if not torch.isfinite(loss):
@@ -186,6 +187,7 @@ def run_configuration(args, directory, workers, cache_mb):
     from torch.utils.data import Subset
     from datasets import MolecularDataset, MolecularDataset3D, prepare_dataset
     from gnn_runtime import make_loader
+    from training_utils import create_optimizer
 
     torch.manual_seed(args.seed)
     graph_path = str(directory / args.graphs) if args.mode != "fingerprints" else None
@@ -230,7 +232,7 @@ def run_configuration(args, directory, workers, cache_mb):
     after_iteration = snapshot(args.device)
     cache_info = dataset.graph_cache_info
     model = build_model(dataset, args.mode, args.device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = create_optimizer(model, "Adam", 0.001, use_fused=args.fused_optimizer)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
     epochs = []
     for _ in range(args.epochs):
@@ -245,6 +247,8 @@ def run_configuration(args, directory, workers, cache_mb):
     if "exp_avg" in optimizer.state.get(parameter, {}):
         references["adam_moment"] = weakref.ref(optimizer.state[parameter]["exp_avg"])
     return dict(workers=workers, graph_cache_mib=cache_mb, pin_memory=args.pin_memory,
+                fused_optimizer_requested=args.fused_optimizer,
+                fused_optimizer_used=bool(optimizer.defaults.get("fused")),
                 dataset_rows=len(dataset), sampled_rows=len(indices), construction_seconds=construction,
                 preprocessing_seconds=preparation, iteration_passes=passes, graph_cache=cache_info,
                 training_epochs=epochs, after_iteration=after_iteration,
@@ -267,6 +271,8 @@ def main():
     parser.add_argument("--workers", type=int, choices=(0, 2, 4), nargs="+", default=[0])
     parser.add_argument("--cache-mb", type=float, nargs="+", default=[128], help="Graph cache budgets in MiB; 0 disables caching.")
     parser.add_argument("--pin-memory", action="store_true")
+    parser.add_argument("--fused-optimizer", action="store_true",
+                        help="Request fused Adam updates for supported float32 CUDA models.")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--pca-components", type=int, default=0)
     parser.add_argument("--threads", type=int, default=1, help="PyTorch CPU threads; native pool environment variables are respected.")

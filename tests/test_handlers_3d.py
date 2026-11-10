@@ -1,4 +1,4 @@
-"""Tests for the 3D tabs. Marked slow: every fixture needs conformer generation."""
+"""3D workflow tests; only cases using generated conformers are marked slow."""
 import os
 from types import SimpleNamespace
 
@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
-import gradio as gr
 from sklearn.preprocessing import MinMaxScaler
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
@@ -16,8 +15,6 @@ import regression_3d as rg3
 from conftest import FakeProgress, SMILES_3D, create_model_3d_args, is_error, is_ok
 from gnn_run_ui import route_model_export
 from run_utils import run_directory, list_saved_models
-
-pytestmark = pytest.mark.slow
 
 
 def process_3d_classification(workdir, shuffle=False):
@@ -45,6 +42,7 @@ def classifier_3d(workdir_3d):
 
 # ----------------------------------------------------------------------- data processing
 
+@pytest.mark.slow
 def test_process_3d_data(workdir_3d):
     status, create_btn, dataset, train_dl, val_dl, test_dl = process_3d_classification(workdir_3d)
     assert is_ok(status)
@@ -52,6 +50,7 @@ def test_process_3d_data(workdir_3d):
     assert sum(len(dl.dataset) for dl in (train_dl, val_dl, test_dl)) == len(SMILES_3D)
 
 
+@pytest.mark.slow
 def test_process_3d_data_rejects_non_binary_targets(workdir_3d):
     path = os.path.join(workdir_3d, "dataset.csv")
     df = pd.read_csv(path)
@@ -65,6 +64,7 @@ def test_process_3d_data_rejects_non_binary_targets(workdir_3d):
 
 # ------------------------------------------------------------------------ model creation
 
+@pytest.mark.slow
 @pytest.mark.parametrize("architecture", ["SchNet", "DimeNet++", "ViSNet"])
 def test_create_each_3d_architecture(workdir_3d, architecture):
     dataset = process_3d_classification(workdir_3d)[2]
@@ -73,6 +73,7 @@ def test_create_each_3d_architecture(workdir_3d, architecture):
     assert result[-4] is not None
 
 
+@pytest.mark.slow
 def test_3d_creating_a_model_disables_training(workdir_3d):
     dataset = process_3d_classification(workdir_3d)[2]
     result = bc3.on_create_model(*create_model_3d_args(dataset, "SchNet"))
@@ -82,6 +83,7 @@ def test_3d_creating_a_model_disables_training(workdir_3d):
     assert train_button.get("interactive") is True
 
 
+@pytest.mark.slow
 def test_3d_training_with_a_stale_optimizer_is_refused(workdir_3d):
     _, _, dataset, train_dl, val_dl, _ = process_3d_classification(workdir_3d)
     model_a = bc3.on_create_model(*create_model_3d_args(dataset, "SchNet"))[-4]
@@ -97,6 +99,7 @@ def test_3d_training_with_a_stale_optimizer_is_refused(workdir_3d):
     assert trained_epochs == 0 and train_losses == []
 
 
+@pytest.mark.slow
 def test_3d_training_reports_failures_instead_of_raising(workdir_3d):
     _, _, dataset, train_dl, _, _ = process_3d_classification(workdir_3d)
     model = bc3.on_create_model(*create_model_3d_args(dataset, "SchNet"))[-4]
@@ -111,6 +114,7 @@ def test_3d_training_reports_failures_instead_of_raising(workdir_3d):
     assert figure is not None
 
 
+@pytest.mark.slow
 def test_3d_shuffle_toggle(workdir_3d):
     shuffled = process_3d_classification(workdir_3d, shuffle=True)[3]
     assert [b.smiles for b in shuffled] != [b.smiles for b in shuffled]
@@ -119,6 +123,7 @@ def test_3d_shuffle_toggle(workdir_3d):
     assert [b.smiles for b in fixed] == [b.smiles for b in fixed]
 
 
+@pytest.mark.slow
 def test_unknown_architecture_is_reported_as_an_error(workdir_3d):
     """Regression: an unmatched tab name returned 'created successfully' with model=None,
     and the failure only surfaced later as an AttributeError."""
@@ -130,12 +135,14 @@ def test_unknown_architecture_is_reported_as_an_error(workdir_3d):
 
 # ---------------------------------------------------------------- training and evaluation
 
+@pytest.mark.slow
 def test_3d_training_records_losses(classifier_3d):
     assert len(classifier_3d["train_losses"]) == 2
     assert classifier_3d["trained_epochs"] == 2
     assert all(np.isfinite(classifier_3d["train_losses"]))
 
 
+@pytest.mark.slow
 def test_3d_evaluate(classifier_3d):
     c = classifier_3d
     status, eval_df, metrics, cm_figure, roc_figure, export_btn, metrics_btn = bc3.on_evaluate(
@@ -149,6 +156,7 @@ def test_3d_evaluate(classifier_3d):
     assert export_btn["interactive"] is True and metrics_btn["interactive"] is True
 
 
+@pytest.mark.slow
 def test_3d_evaluate_without_a_model_reports_an_error(classifier_3d):
     status, eval_df, metrics, cm, roc, export_btn, metrics_btn = bc3.on_evaluate(
         None, classifier_3d["dataset"], classifier_3d["test_dl"], "cpu", torch.float32)
@@ -156,6 +164,7 @@ def test_3d_evaluate_without_a_model_reports_an_error(classifier_3d):
     assert export_btn["interactive"] is False and metrics_btn["interactive"] is False
 
 
+@pytest.mark.slow
 def test_3d_prediction(classifier_3d):
     c = classifier_3d
     status, prediction_dataset, dataloader, _ = bc3.on_process_prediction_data(
@@ -170,6 +179,7 @@ def test_3d_prediction(classifier_3d):
 
 # --------------------------------------------------------------------------- checkpoints
 
+@pytest.mark.slow
 def test_3d_checkpoint_round_trip(classifier_3d):
     c = classifier_3d
     status, _ = bc3.on_save_checkpoint(c["workdir"], "ckpt", c["model"], c["trained_epochs"])
@@ -182,6 +192,7 @@ def test_3d_checkpoint_round_trip(classifier_3d):
     assert trained_epochs == c["trained_epochs"]
 
 
+@pytest.mark.slow
 def test_3d_failed_load_preserves_state(classifier_3d):
     c = classifier_3d
     status, _, train_losses, val_losses, trained_epochs = bc3.on_load_checkpoint(
@@ -191,6 +202,7 @@ def test_3d_failed_load_preserves_state(classifier_3d):
     assert train_losses == [0.1] and val_losses == [0.2] and trained_epochs == 5
 
 
+@pytest.mark.slow
 def test_3d_architecture_mismatch_is_rejected(workdir_3d):
     dataset = process_3d_classification(workdir_3d)[2]
     schnet = bc3.on_create_model(*create_model_3d_args(dataset, "SchNet"))[-4]
@@ -206,6 +218,7 @@ def test_3d_architecture_mismatch_is_rejected(workdir_3d):
 
 # ------------------------------------------------------------------------- 3D regression
 
+@pytest.mark.slow
 def test_3d_regression_flow(tmp_path, workdir_3d):
     """Targets must be numeric here, so rewrite the binary column with real values."""
     path = os.path.join(workdir_3d, "dataset.csv")
@@ -232,6 +245,7 @@ def test_3d_regression_flow(tmp_path, workdir_3d):
     assert export_btn["interactive"] is True and metrics_btn["interactive"] is True
 
 
+@pytest.mark.slow
 def test_3d_regression_checkpoint_carries_the_scaler(workdir_3d):
     path = os.path.join(workdir_3d, "dataset.csv")
     df = pd.read_csv(path)
@@ -249,6 +263,7 @@ def test_3d_regression_checkpoint_carries_the_scaler(workdir_3d):
     assert np.allclose(restored_scaler.data_min_, scaler.data_min_)
 
 
+@pytest.mark.slow
 def test_3d_regression_evaluate_without_a_scaler_reports_an_error(workdir_3d):
     path = os.path.join(workdir_3d, "dataset.csv")
     df = pd.read_csv(path)
@@ -263,80 +278,7 @@ def test_3d_regression_evaluate_without_a_scaler_reports_an_error(workdir_3d):
     assert is_error(status) and eval_df is None
 
 
-@pytest.fixture(params=[bc3, rg3], ids=["classification", "regression"])
-def cached_3d_evaluation(request):
-    module = request.param
-    frame = pd.DataFrame({"SMILES": ["C", "CC", "CCC", "CCCC"],
-                          "activity": [0, 1, 0, 1], "activity (Prediction)": [0, 1, 1, 1]})
-    if module is bc3:
-        frame["activity (Probability)"] = [0.1, 0.8, 0.6, 0.9]
-    return module, frame, SimpleNamespace(target_column_name="activity")
-
-
-@pytest.mark.parametrize("suffix", ["", ".csv"])
-def test_3d_exports_cached_rows_and_all_metrics(tmp_path, cached_3d_evaluation, suffix):
-    module, frame, dataset = cached_3d_evaluation
-    status, contents = module.on_export_evaluation(str(tmp_path), f"evaluation{suffix}", frame)
-    assert is_ok(status) and "evaluation.csv" in contents
-    pd.testing.assert_frame_equal(pd.read_csv(tmp_path / "evaluation.csv"), frame)
-    status, contents = module.on_export_metrics(str(tmp_path), f"test_metrics{suffix}", frame, dataset)
-    assert is_ok(status) and "test_metrics.csv" in contents
-    metrics = pd.read_csv(tmp_path / "test_metrics.csv")
-    assert list(metrics.columns) == ["Target", "Metric", "Value"]
-    assert set(metrics["Target"]) == {"activity"}
-    expected = (["Accuracy", "Balanced accuracy", "Precision", "Recall", "Specificity", "F1 score",
-                 "MCC", "ROC-AUC score", "AUPRC", "Average precision"] if module is bc3
-                else ["MAE", "MSE", "RMSE", "R²"])
-    assert metrics["Metric"].tolist() == expected
-    assert metrics.loc[metrics["Metric"] == ("Accuracy" if module is bc3 else "MAE"), "Value"].item() == (0.75 if module is bc3 else 0.25)
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["evaluation.csv", "test_metrics.csv"]
-
-
-@pytest.mark.parametrize("frame", [None, pd.DataFrame()])
-def test_3d_exports_refuse_missing_or_empty_evaluation(tmp_path, cached_3d_evaluation, frame):
-    module, _, dataset = cached_3d_evaluation
-    for result in (module.on_export_evaluation(str(tmp_path), "evaluation", frame),
-                   module.on_export_metrics(str(tmp_path), "test_metrics", frame, dataset)):
-        assert is_error(result[0])
-        assert result[1] == gr.update()
-    assert not list(tmp_path.iterdir())
-
-
-@pytest.mark.parametrize("name", ["../outside", "<unsafe>/file", ""])
-def test_3d_exports_refuse_unsafe_names(tmp_path, cached_3d_evaluation, name):
-    module, frame, dataset = cached_3d_evaluation
-    for result in (module.on_export_evaluation(str(tmp_path), name, frame),
-                   module.on_export_metrics(str(tmp_path), name, frame, dataset)):
-        assert is_error(result[0])
-        assert "<unsafe>" not in result[0]
-        assert result[1] == gr.update()
-    assert not list(tmp_path.iterdir())
-
-
-def test_3d_exports_report_missing_directory_or_targets_without_raising(tmp_path, cached_3d_evaluation):
-    module, frame, dataset = cached_3d_evaluation
-    for workdir in (None, str(tmp_path / "missing")):
-        assert is_error(module.on_export_evaluation(workdir, "evaluation", frame)[0])
-        assert is_error(module.on_export_metrics(workdir, "metrics", frame, dataset)[0])
-    assert is_error(module.on_export_metrics(str(tmp_path), "metrics", frame, None)[0])
-    assert is_error(module.on_export_metrics(str(tmp_path), "metrics", frame, SimpleNamespace(target_column_name=None))[0])
-    assert not list(tmp_path.iterdir())
-
-
-@pytest.mark.parametrize("module", [bc3, rg3])
-def test_3d_processing_disables_both_evaluation_exports(tmp_path, monkeypatch, module):
-    monkeypatch.setattr(module, "DATA_DIR", str(tmp_path))
-    builder = module.binary_classification_3d_tab_content if module is bc3 else module.regression_3d_tab_content
-    with gr.Blocks() as blocks:
-        builder()
-    process = next(event for event in blocks.fns.values() if getattr(event.fn, "__name__", None) == "on_process_data")
-    updates = process.fn(str(tmp_path), "missing.csv", "GRAPH_graphs", torch.float32, 0.2, 0.2, 4, False, 0, "Random")
-    buttons = [component for component in process.outputs if isinstance(component, gr.Button)
-               and component.value in {"Export test metrics (all targets)", "Export evaluation rows (all targets)"}]
-    assert len(buttons) == 2
-    assert all(updates[button]["interactive"] is False for button in buttons)
-
-
+@pytest.mark.slow
 @pytest.mark.parametrize("module", [bc3, rg3])
 @pytest.mark.parametrize("value", [float('nan'), float('inf'), -float('inf')])
 def test_3d_processing_rejects_nonfinite_targets(workdir_3d, module, value):
@@ -353,6 +295,7 @@ def test_3d_processing_rejects_nonfinite_targets(workdir_3d, module, value):
     assert result[2] is None
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("module", [bc3, rg3])
 def test_3d_processing_rejects_multiple_targets(workdir_3d, module):
     # A working directory can contain a CSV uploaded through one of the 2D tabs.
@@ -470,6 +413,7 @@ def test_3d_regression_constant_targets_match_displayed_and_exported_metrics(tmp
     pd.testing.assert_frame_equal(metrics, exported.drop(columns="Target").round({"Value": 4}))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_3d_regression_scales_before_casting_large_targets(workdir_3d, dtype):
     path = os.path.join(workdir_3d, "dataset.csv")
@@ -534,6 +478,7 @@ def test_3d_scheduler_failure_keeps_completed_epoch_count(monkeypatch, module):
     assert result[3] == len(result[4]) == len(result[5]) == 1
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("module", [bc3, rg3])
 def test_named_3d_runs_capture_seeds_save_load_and_export(workdir_3d, module):
     processed = module.on_process_data(workdir_3d, "dataset.csv", "GRAPH_g3d", torch.float32,

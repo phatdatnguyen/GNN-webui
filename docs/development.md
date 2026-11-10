@@ -25,7 +25,8 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The 3D tests need conformer generation, which is the slow part. To skip them:
+Tests needing 3D conformer generation are marked slow. Tensor-only 3D tests remain
+in the regular suite. To skip conformer generation:
 
 ```
 pytest -m "not slow"
@@ -46,6 +47,13 @@ pytest -k checkpoint                 # one topic across all files
 
 The API tests exercise Gradio preprocessing, session state, and plot serialization;
 they require an environment that allows local sockets.
+
+Keep test cases at the level that owns the behavior. Shared CSV utilities cover
+filename and empty-data variants; workflow/API tests cover error reporting, state
+changes and complete exports. Each classical estimator's fit/checkpoint test also
+checks reproducibility, reusing its first fitted model. Preserve the custom-layer
+depth matrix and numerical, alignment, checkpoint, provenance, and resource-lifetime
+regressions when consolidating tests.
 
 If Python segfaults during Gradio imports, before application code runs, the following
 allocator workaround allowed the complete suite to pass in the local environment:

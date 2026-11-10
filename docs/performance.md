@@ -14,6 +14,10 @@ fingerprints use one byte per bit value rather than an eight-byte integer; this 
 about 20 MiB for 10,000 molecules with 2,048 bits, excluding SMILES, prepared features,
 and temporary batches. Legacy nonbinary fingerprint values retain integer storage.
 Regression targets retain their raw precision until scaling.
+Loaders gather these numeric fields once per batch, and ordinary cached graphs use
+faster tensor copies. Individual sample access and returned batches remain isolated
+from the cached source. Graphs with shared tensor storage or custom metadata retain
+the original copying behavior.
 
 Variance filtering, PCA, and target scaling are fitted on training rows only.
 Transformed data are prepared once per fitted transformer state and reused by
@@ -43,6 +47,26 @@ transfers** controls appear in **Load and process data**. Settings take effect a
 seed, architecture, and device unchanged when comparing timings. The first graph
 pass fills an application cache; subsequent passes can be faster. The operating
 system also caches files, so a fresh application cache does not imply a cold disk cache.
+
+## Training acceleration
+
+Hybrid models receive the graph count already known by the loader, avoiding a GPU
+readback to determine the pooling output size. Validation checks its accumulated
+loss once per epoch. Training still checks each batch's loss before updating weights.
+These changes preserve the selected precision, architecture, batch order, and loss
+definitions.
+
+For an additional option, enable **Use fused CUDA optimizer** under **Model training**,
+then click **Create optimizer**. It applies to float32 CUDA Adam and AdamW when the
+installed PyTorch supports fused updates. Other configurations use standard updates,
+and the status reports which path was selected. Changing the checkbox requires
+recreating the optimizer to take effect.
+
+This option is **off by default**. Fused updates can reduce GPU kernel overhead, but
+speed depends on the model and hardware, and small floating-point rounding differences
+are possible. Compare runs with the same data, batch size, seeds, and settings. See
+[PyTorch Adam](https://docs.pytorch.org/docs/2.12/generated/torch.optim.Adam.html) and
+[PyG pooling](https://pytorch-geometric.readthedocs.io/en/latest/generated/torch_geometric.nn.pool.global_mean_pool.html).
 
 ## Releasing resources
 
@@ -102,6 +126,8 @@ To compare an existing dataset without changing any source files:
 Use `--workers 0 2 4` to compare loading configurations, `--device cuda --pin-memory`
 to test pinned CUDA transfers, or `--mode 3d` for a SchNet/conformer diagnostic.
 `--mode graphs` and `--mode fingerprints` isolate the corresponding inputs.
+Add `--fused-optimizer` to compare the optional optimizer path; the JSON reports both
+the requested setting and whether fused updates were actually enabled.
 For regression, add `--task regression`; `--pca-components 32` enables a small PCA
 comparison when fingerprints and enough sampled rows are available. These are small
 representative training models, not a reproduction of every UI architecture.
@@ -175,3 +201,15 @@ default. Ten small GCN create/train/release cycles released every tracked refere
 and kept post-release CUDA allocation at 16.25 MiB and reservation at 22 MiB. Stable
 runtime allocations can remain after model objects are gone; the diagnostic checks
 growth after warm-up rather than requiring zero GPU allocation.
+
+A further comparison used the actual hybrid training and validation handlers on
+1,024 seeded MTX rows (768 training, 256 validation), the default 128-wide three-layer
+GCN/hybrid architecture, batch size 64, and one CPU thread on the RTX 4090. After two
+warm-up rounds, five measured rounds interleaved the configurations in randomized
+order. Median training-plus-validation time was 3.834 s for the previous implementation,
+which already had the bounded graph cache, 3.576 s with faster batch loading and fewer
+scalar readbacks, and 3.586 s with the
+optional fused Adam updates also enabled. The default improvements reduced this
+measurement by about 6.7%; fused Adam added no further gain in this complete pipeline.
+Maximum loss differences stayed below `3e-6`. These are example measurements for
+this dataset and hardware, not a promised speedup for every architecture.

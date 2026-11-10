@@ -6,6 +6,19 @@ from torch_geometric.nn import GCN, GraphSAGE, GIN, GAT, EdgeCNN, AttentiveFP, G
 CHEB_CONV_K = 3
 
 
+class _GraphCountModel(torch.nn.Module):
+    """Hybrid wrappers that accept the loader's known graph count for pooling."""
+
+
+def graph_count_kwargs(model, num_graphs):
+    """Avoid reading a CUDA batch index back just to infer an output shape.
+
+    Keep ordinary module signatures working for imported/custom callers and PyG
+    architectures (such as AttentiveFP) whose own readout owns that calculation.
+    """
+    return {"num_graphs": num_graphs} if isinstance(model, _GraphCountModel) else {}
+
+
 def model_requires_edge_attr(model):
     """Select the forward signature from the actual model, independent of UI tabs."""
     return isinstance(model, (
@@ -90,7 +103,7 @@ class MLPModel(torch.nn.Module):
 
         return self.out(h)
 
-class GCNModel(torch.nn.Module):
+class GCNModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -128,13 +141,13 @@ class GCNModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.n_gcn_outputs > 0:
             # BasicGNN.forward is (x, edge_index, edge_weight, edge_attr, batch, ...)
             h1 = self.graph_encoder(x, edge_index, None, None, batch_index)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -153,7 +166,7 @@ class GCNModel(torch.nn.Module):
 
         return self.out(h)
 
-class GraphSAGEModel(torch.nn.Module):
+class GraphSAGEModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -191,12 +204,12 @@ class GraphSAGEModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.n_gcn_outputs > 0:
             h1 = self.graph_encoder(x, edge_index, None, None, batch_index)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -214,7 +227,7 @@ class GraphSAGEModel(torch.nn.Module):
 
         return self.out(h)
     
-class GINModel(torch.nn.Module):
+class GINModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -252,12 +265,12 @@ class GINModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.n_gcn_outputs > 0:
             h1 = self.graph_encoder(x, edge_index, None, None, batch_index)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -275,7 +288,7 @@ class GINModel(torch.nn.Module):
 
         return self.out(h)
     
-class GATModel(torch.nn.Module):
+class GATModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -316,12 +329,12 @@ class GATModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
+    def forward(self, x, edge_index, edge_attr, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.n_gcn_outputs > 0:
             h1 = self.graph_encoder(x, edge_index, None, edge_attr, batch_index)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -339,7 +352,7 @@ class GATModel(torch.nn.Module):
 
         return self.out(h)
 
-class EdgeCNNModel(torch.nn.Module):
+class EdgeCNNModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -377,12 +390,12 @@ class EdgeCNNModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.n_gcn_outputs > 0:
             h1 = self.graph_encoder(x, edge_index, None, None, batch_index)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -470,7 +483,7 @@ class AttentiveFPModel(torch.nn.Module):
 
         return self.out(h)
 
-class GCNConvModel(torch.nn.Module):
+class GCNConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -510,7 +523,7 @@ class GCNConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -521,7 +534,7 @@ class GCNConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:  # Last layer is Linear
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -539,7 +552,7 @@ class GCNConvModel(torch.nn.Module):
 
         return self.out(h)
     
-class SAGEConvModel(torch.nn.Module):
+class SAGEConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -579,7 +592,7 @@ class SAGEConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -590,7 +603,7 @@ class SAGEConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -608,7 +621,7 @@ class SAGEConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class SGConvModel(torch.nn.Module):
+class SGConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -648,7 +661,7 @@ class SGConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -659,7 +672,7 @@ class SGConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -677,7 +690,7 @@ class SGConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class ClusterGCNConvModel(torch.nn.Module):
+class ClusterGCNConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -717,7 +730,7 @@ class ClusterGCNConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -728,7 +741,7 @@ class ClusterGCNConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -746,7 +759,7 @@ class ClusterGCNConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class GraphConvModel(torch.nn.Module):
+class GraphConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -786,7 +799,7 @@ class GraphConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -797,7 +810,7 @@ class GraphConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -815,7 +828,7 @@ class GraphConvModel(torch.nn.Module):
 
         return self.out(h)
     
-class ChebConvModel(torch.nn.Module):
+class ChebConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -855,7 +868,7 @@ class ChebConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -866,7 +879,7 @@ class ChebConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -884,7 +897,7 @@ class ChebConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class LEConvModel(torch.nn.Module):
+class LEConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -924,7 +937,7 @@ class LEConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -935,7 +948,7 @@ class LEConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -953,7 +966,7 @@ class LEConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class EGConvModel(torch.nn.Module):
+class EGConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -993,7 +1006,7 @@ class EGConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1004,7 +1017,7 @@ class EGConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1022,7 +1035,7 @@ class EGConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class MFConvModel(torch.nn.Module):
+class MFConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1062,7 +1075,7 @@ class MFConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1073,7 +1086,7 @@ class MFConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1091,7 +1104,7 @@ class MFConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class FeaStConvModel(torch.nn.Module):
+class FeaStConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1131,7 +1144,7 @@ class FeaStConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1142,7 +1155,7 @@ class FeaStConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1160,7 +1173,7 @@ class FeaStConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class TAGConvModel(torch.nn.Module):
+class TAGConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1200,7 +1213,7 @@ class TAGConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1211,7 +1224,7 @@ class TAGConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1229,7 +1242,7 @@ class TAGConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class ARMAConvModel(torch.nn.Module):
+class ARMAConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1269,7 +1282,7 @@ class ARMAConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1280,7 +1293,7 @@ class ARMAConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1298,7 +1311,7 @@ class ARMAConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class FiLMConvModel(torch.nn.Module):
+class FiLMConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1338,7 +1351,7 @@ class FiLMConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1349,7 +1362,7 @@ class FiLMConvModel(torch.nn.Module):
                     h1 = torch.relu(h1)
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1367,7 +1380,7 @@ class FiLMConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class PDNConvModel(torch.nn.Module):
+class PDNConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1413,7 +1426,7 @@ class PDNConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
+    def forward(self, x, edge_index, edge_attr, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1424,7 +1437,7 @@ class PDNConvModel(torch.nn.Module):
                     h1 = layer(h1, edge_index, edge_attr)
                 else:
                     h1 = torch.relu(layer(h1))
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1442,7 +1455,7 @@ class PDNConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class GENConvModel(torch.nn.Module):
+class GENConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1487,7 +1500,7 @@ class GENConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
+    def forward(self, x, edge_index, edge_attr, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1498,7 +1511,7 @@ class GENConvModel(torch.nn.Module):
                     h1 = layer(h1, edge_index, edge_attr)
                 else:
                     h1 = torch.relu(layer(h1))
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1516,7 +1529,7 @@ class GENConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class ResGatedGraphConvModel(torch.nn.Module):
+class ResGatedGraphConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1561,7 +1574,7 @@ class ResGatedGraphConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
+    def forward(self, x, edge_index, edge_attr, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1572,7 +1585,7 @@ class ResGatedGraphConvModel(torch.nn.Module):
                     h1 = layer(h1, edge_index, edge_attr)
                 else:
                     h1 = torch.relu(layer(h1))
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1590,7 +1603,7 @@ class ResGatedGraphConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class GATConvModel(torch.nn.Module):
+class GATConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1636,7 +1649,7 @@ class GATConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
+    def forward(self, x, edge_index, edge_attr, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1647,7 +1660,7 @@ class GATConvModel(torch.nn.Module):
                     h1 = layer(h1, edge_index, edge_attr)
                 else:
                     h1 = torch.relu(layer(h1))
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1665,7 +1678,7 @@ class GATConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class GATv2ConvModel(torch.nn.Module):
+class GATv2ConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1711,7 +1724,7 @@ class GATv2ConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
+    def forward(self, x, edge_index, edge_attr, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1722,7 +1735,7 @@ class GATv2ConvModel(torch.nn.Module):
                     h1 = layer(h1, edge_index, edge_attr)
                 else:
                     h1 = torch.relu(layer(h1))
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1740,7 +1753,7 @@ class GATv2ConvModel(torch.nn.Module):
 
         return self.out(h)
     
-class SuperGATConvModel(torch.nn.Module):
+class SuperGATConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1785,7 +1798,7 @@ class SuperGATConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, batch_index, mol_features):
+    def forward(self, x, edge_index, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1796,7 +1809,7 @@ class SuperGATConvModel(torch.nn.Module):
                     h1 = layer(h1, edge_index)
                 else:
                     h1 = torch.relu(layer(h1))
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1814,7 +1827,7 @@ class SuperGATConvModel(torch.nn.Module):
 
         return self.out(h)
    
-class TransformerConvModel(torch.nn.Module):
+class TransformerConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1864,7 +1877,7 @@ class TransformerConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
+    def forward(self, x, edge_index, edge_attr, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1877,7 +1890,7 @@ class TransformerConvModel(torch.nn.Module):
                     h1 = torch.relu(layer(h1))
                 else:
                     h1 = layer(h1)
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features
@@ -1895,7 +1908,7 @@ class TransformerConvModel(torch.nn.Module):
 
         return self.out(h)
 
-class GeneralConvModel(torch.nn.Module):
+class GeneralConvModel(_GraphCountModel):
     def __init__(
         self,
         n_gcn_inputs: int,
@@ -1941,7 +1954,7 @@ class GeneralConvModel(torch.nn.Module):
 
         self.out = Linear(n_predictor_hiddens, n_outputs) if n_predictor_layers > 0 else Linear(prediction_head_input_dim, n_outputs)
 
-    def forward(self, x, edge_index, edge_attr, batch_index, mol_features):
+    def forward(self, x, edge_index, edge_attr, batch_index, mol_features, num_graphs=None):
         h1 = None
         h2 = None
         if self.graph_encoder:
@@ -1952,7 +1965,7 @@ class GeneralConvModel(torch.nn.Module):
                     h1 = layer(h1, edge_index, edge_attr)
                 else:
                     h1 = torch.relu(layer(h1))
-            h1 = global_mean_pool(h1, batch_index)
+            h1 = global_mean_pool(h1, batch_index, size=num_graphs)
 
         if self.fingerprint_encoder:
             h2 = mol_features

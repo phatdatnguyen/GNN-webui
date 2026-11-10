@@ -14,6 +14,7 @@ from matplotlib import pyplot as plt
 from datasets import MolecularDataset, prepare_dataset
 from gnn_runtime import (make_loader, cache_budget_bytes, hybrid_graph_inputs,
                          batch_fingerprints, batch_targets, safe_model_summary)
+from training_utils import create_optimizer, validation_loss
 from ui_utils import bind_data_processing, bind_result_invalidation
 from update_dataset import build_dataset_upload_controls, upload_dataset
 import feature_extraction
@@ -548,23 +549,18 @@ def on_load_checkpoint(working_directory_path, checkpoint_file_name, model, trai
         return f"<span style='color: red;'>{status}</span>", model, train_losses, val_losses, trained_epochs, variance_threshold, pca
 
 loss_fn = torch.nn.BCEWithLogitsLoss()
-def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider):
+def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider, use_fused=False):
     try:
         if model is None:
             raise ValueError("Please create a model first.")
-        optimizers = {
-            "Adam": torch.optim.Adam,
-            "AdamW": torch.optim.AdamW,
-            "SGD": torch.optim.SGD
-        }
-        opt_class = optimizers.get(optimizer_dropdown)
-        if opt_class is None:
-            raise ValueError(f"Unknown optimizer '{optimizer_dropdown}'.")
-
-        optimizer = opt_class(model.parameters(), lr=learning_rate_slider)
+        optimizer = create_optimizer(model, optimizer_dropdown, learning_rate_slider, use_fused)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=learning_rate_decay_slider)
 
         status = "Optimizer created."
+        if optimizer.defaults.get("fused"):
+            status += " Using fused CUDA updates."
+        elif use_fused:
+            status += " Fused updates require float32 CUDA Adam/AdamW and a compatible PyTorch build; using standard updates."
         return f"<span style='color: green;'>{status}</span>", optimizer, scheduler, gr.update(interactive=True)
     except Exception as exc:
         status = f"Error creating optimizer: {exc}"
@@ -592,9 +588,11 @@ def train(model, dataset, dataloader, device, datatype, optimizer, gnn_model_tab
         if dataset.load_data == 'Molecular fingerprints':
             output = model(fingerprints_tensor)
         elif need_edge_attr:
-            output = model(x, edge_index, edge_attr, batch_index, fingerprints_tensor)
+            output = model(x, edge_index, edge_attr, batch_index, fingerprints_tensor,
+                           **graph_count_kwargs(model, getattr(batch, "num_graphs", None)))
         else:
-            output = model(x, edge_index, batch_index, fingerprints_tensor)
+            output = model(x, edge_index, batch_index, fingerprints_tensor,
+                           **graph_count_kwargs(model, getattr(batch, "num_graphs", None)))
 
         # Compute loss and backpropagate
         loss = loss_fn(output, y)
@@ -631,18 +629,18 @@ def validation(model, dataset, dataloader, device, datatype, gnn_model_tab, cust
             if dataset.load_data == 'Molecular fingerprints':
                 output = model(fingerprints_tensor)
             elif need_edge_attr:
-                output = model(x, edge_index, edge_attr, batch_index, fingerprints_tensor)
+                output = model(x, edge_index, edge_attr, batch_index, fingerprints_tensor,
+                               **graph_count_kwargs(model, getattr(batch, "num_graphs", None)))
             else:
-                output = model(x, edge_index, batch_index, fingerprints_tensor)
+                output = model(x, edge_index, batch_index, fingerprints_tensor,
+                               **graph_count_kwargs(model, getattr(batch, "num_graphs", None)))
 
             # Compute loss
             loss = loss_fn(output, y)
-            if not torch.isfinite(loss):
-                raise ValueError("Validation loss is not finite. Try a lower learning rate or float32 data type.")
             total_loss += loss.detach().to(torch.float64) * y.shape[0]
         num_samples += y.shape[0]
 
-    return total_loss.item() / num_samples if num_samples > 0 else 0.0
+    return validation_loss(total_loss, num_samples)
 
 def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca, progress=gr.Progress()):
     loss_epochs = None
@@ -720,9 +718,11 @@ def test(model, dataset, dataloader, device, datatype, gnn_model_tab, customgcn_
             if dataset.load_data == 'Molecular fingerprints':
                 output = model(fingerprints_tensor)
             elif need_edge_attr:
-                output = model(x, edge_index, edge_attr, batch_index, fingerprints_tensor)
+                output = model(x, edge_index, edge_attr, batch_index, fingerprints_tensor,
+                               **graph_count_kwargs(model, getattr(batch, "num_graphs", None)))
             else:
-                output = model(x, edge_index, batch_index, fingerprints_tensor)
+                output = model(x, edge_index, batch_index, fingerprints_tensor,
+                               **graph_count_kwargs(model, getattr(batch, "num_graphs", None)))
 
         smiles_list.extend(smiles)
         y_test_list.append(y.detach())
@@ -874,9 +874,11 @@ def predict(model, dataset, dataloader, device, datatype, gnn_model_tab, customg
             if dataset.load_data == 'Molecular fingerprints':
                 output = model(fingerprints_tensor)
             elif need_edge_attr:
-                output = model(x, edge_index, edge_attr, batch_index, fingerprints_tensor)
+                output = model(x, edge_index, edge_attr, batch_index, fingerprints_tensor,
+                               **graph_count_kwargs(model, getattr(batch, "num_graphs", None)))
             else:
-                output = model(x, edge_index, batch_index, fingerprints_tensor)
+                output = model(x, edge_index, batch_index, fingerprints_tensor,
+                               **graph_count_kwargs(model, getattr(batch, "num_graphs", None)))
         
         smiles_list.extend(batch.smiles)
         logits_list.append(output.cpu().detach())
@@ -1081,6 +1083,9 @@ def binary_classification_hybrid_tab_content():
                                 optimizer_dropdown = gr.Dropdown(label="Optimizer", value="Adam", choices=["Adam", "AdamW", "SGD"]) 
                                 learning_rate_slider = gr.Slider(label="Learning rate", minimum=0.000001, maximum=0.1, value=0.0001, step=0.000001)
                                 learning_rate_decay_slider = gr.Slider(label="Learning rate decay", minimum=0.5, maximum=1, value=0.99, step=0.001)
+                            fused_optimizer_checkbox = gr.Checkbox(
+                                label="Use fused CUDA optimizer", value=False,
+                                info="Optional acceleration for float32 CUDA Adam/AdamW. Small rounding differences are possible.")
                             create_optimizer_button = gr.Button(value="Create optimizer", interactive=False)
                             optimizer_state = gr.State()
                             schedular_state = gr.State()
@@ -1217,7 +1222,7 @@ def binary_classification_hybrid_tab_content():
                                  [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state, run_directory_textbox, model_name_textbox, model_random_seed_slider, optimizer_state, schedular_state, train_button, training_plot, export_losses_button], **result_reset)
     
     # Train model interactions
-    create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider], [status_html, optimizer_state, schedular_state, train_button], concurrency_id=concurrency_id)
+    create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider, fused_optimizer_checkbox], [status_html, optimizer_state, schedular_state, train_button], concurrency_id=concurrency_id)
     bind_result_invalidation(train_button, on_train, [model_state, dataset_state, train_dataloader_state, val_dataloader_state, device_dropdown, datatype_state,
                                   optimizer_state, schedular_state, epochs_slider, trained_epochs_state, train_losses_state, val_losses_state,
                                   gnn_model_tab_state, customgcn_convolutional_layer_name, variance_threshold_state, pca_state],
