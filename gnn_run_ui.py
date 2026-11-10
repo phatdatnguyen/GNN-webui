@@ -252,6 +252,59 @@ def reset_checkpoint_optimizer(callback):
     return load_and_reset
 
 
+def reset_created_optimizer(callback):
+    """Release the previous model's optimizer and scheduler on every creation attempt."""
+    @wraps(callback)
+    def create_and_reset(*args, **kwargs):
+        result = callback(*args, **kwargs)
+        return (*result, None, None, gr.update(value=None), gr.update(interactive=False))
+    return create_and_reset
+
+
+def cache_prediction_rows(callback, preview_rows=200):
+    """Retain complete predictions server-side and send only a preview to the browser."""
+    @wraps(callback)
+    def predict_with_preview(*args, **kwargs):
+        status, frame, export_button = callback(*args, **kwargs)
+        if "color: green" not in status or frame is None:
+            return status, gr.update(value=None), gr.update(interactive=False), None
+        count = len(frame)
+        message = (f" Showing {min(count, preview_rows):,} of {count:,} rows. "
+                   "Export includes all rows.")
+        status = status.replace("</span>", message + "</span>")
+        return status, frame.head(preview_rows).copy(), export_button, frame
+    return predict_with_preview
+
+
+def bind_release_run(button, status_component, reset_updates, *, concurrency_id=None):
+    """Drop all resources owned by this tab while preserving its directory and files."""
+    def release_current_run():
+        result = {component: deepcopy(value) for component, value in reset_updates.items()}
+        result[status_component] = (
+            "<span style='color: green;'>Current run released. "
+            "Saved files are unchanged. Process data to start another run.</span>")
+        return result
+
+    return button.click(release_current_run, [], [status_component, *reset_updates],
+                        concurrency_id=concurrency_id)
+
+
+def build_loader_controls():
+    """Conservative performance settings shared by training and prediction loading."""
+    with gr.Group():
+        gr.Markdown("**Data loading**")
+        with gr.Row():
+            graph_cache_mb = gr.Slider(
+                minimum=0, maximum=2048, step=32, value=128,
+                label="Graph cache limit (MiB)",
+                info="Per processed dataset, including prediction data. Set 0 for disk loading.")
+            loader_workers = gr.Dropdown(
+                choices=[0, 2, 4], value=0, label="DataLoader workers",
+                info="0 uses the main process. Extra workers may increase memory use.")
+            pin_memory = gr.Checkbox(value=False, label="Pin memory for CUDA transfers")
+    return graph_cache_mb, loader_workers, pin_memory
+
+
 def directory_reset_updates(clear_states, loss_states, epoch_state, disable_buttons,
                             clear_components, similarity_controls):
     updates = dict.fromkeys(clear_states, None)

@@ -138,6 +138,15 @@ model and results, along with any GNN optimizer and training history. Create or 
 model again for the new split, so a model trained on an older split cannot be evaluated
 against a new holdout accidentally.
 
+GNN tabs also provide a graph-cache limit (128 MiB by default), loader workers
+(0 by default), and optional pinned memory for CUDA. These take effect when data
+are processed. Start with the defaults, then consult [performance and memory](performance.md)
+to compare settings. **Release current run**, below the working-directory button,
+discards that tab's unsaved results and in-memory resources while preserving its
+saved files. Closing or refreshing the browser normally releases its session; save or
+export anything you need first. GNN prediction tables preview 200 rows, while CSV
+exports contain every prediction.
+
 ### Separate data and model seeds
 
 **Data split random seed** is in the split controls of **Load and process data**,

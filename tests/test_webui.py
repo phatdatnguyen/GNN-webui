@@ -64,7 +64,8 @@ def test_each_tab_builds(label, builder):
     process_callbacks = [callback for callback in blocks.fns.values()
                          if getattr(callback.fn, "__name__", None) == "on_process_data"]
     assert len(process_callbacks) == 1
-    assert process_callbacks[0].inputs[-1] is split_radio
+    process_parameters = list(inspect.signature(process_callbacks[0].fn).parameters)
+    assert process_callbacks[0].inputs[process_parameters.index("split_method")] is split_radio
 
     split_seed = next(component for component in blocks.blocks.values()
                       if isinstance(component, gr.Slider) and component.label == "Data split random seed")

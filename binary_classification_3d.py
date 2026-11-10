@@ -9,11 +9,13 @@ from torch_geometric.loader import DataLoader
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, auc, roc_curve
 from evaluation_metrics import classification_metrics, metrics_from_predictions
 from matplotlib import pyplot as plt
-from datasets import MolecularDataset3D
+from datasets import MolecularDataset3D, prepare_dataset
+from gnn_runtime import (make_loader, cache_budget_bytes, hybrid_graph_inputs,
+                         batch_fingerprints, batch_targets, safe_model_summary)
 from ui_utils import bind_data_processing, bind_result_invalidation
 from update_dataset import build_dataset_upload_controls, upload_dataset
 import feature_extraction
-from gnn_run_ui import attach_model_run, capture_split_outputs, route_model_export, bind_working_directory, load_run_checkpoint, ensure_model_split, directory_reset_updates, show_model_run, capture_feature_sources, bind_artifact_update, bind_checkpoint_save, reset_checkpoint_optimizer, loss_epoch_numbers
+from gnn_run_ui import reset_created_optimizer, cache_prediction_rows, bind_release_run, build_loader_controls, attach_model_run, capture_split_outputs, route_model_export, bind_working_directory, load_run_checkpoint, ensure_model_split, directory_reset_updates, show_model_run, capture_feature_sources, bind_artifact_update, bind_checkpoint_save, reset_checkpoint_optimizer, loss_epoch_numbers
 from run_utils import make_split_context, ensure_run_directory, list_saved_models, resolve_saved_model, validate_seed
 from similarity_ui import build_similarity_controls, bind_similarity_controls
 from models import *
@@ -153,7 +155,7 @@ def on_extract_graphs(working_directory_path, dataset_file_name, graph_directory
         working_directory_path, dataset_file_name, graph_directory, number_of_conformers, force_field,
         datatype, progress)
 
-def on_process_data(working_directory_path, dataset_file_name, graph_directory, datatype, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed, split_method="Random"):
+def on_process_data(working_directory_path, dataset_file_name, graph_directory, datatype, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed, split_method="Random", graph_cache_mb=128, loader_workers=0, pin_memory=False):
     try:
         # Validate inputs
         random_seed = validate_seed(random_seed)
@@ -183,7 +185,7 @@ def on_process_data(working_directory_path, dataset_file_name, graph_directory, 
         # Set up dataset and dataloaders
         graph_directory_path = os.path.join(working_directory_path, graph_directory)
 
-        dataset = MolecularDataset3D(dataset_file_path, graph_directory_path, datatype)
+        dataset = MolecularDataset3D(dataset_file_path, graph_directory_path, datatype, graph_cache_bytes=cache_budget_bytes(graph_cache_mb))
         
         total_len = len(dataset)
         capture_feature_sources(dataset, graph_directory_path)
@@ -196,11 +198,14 @@ def on_process_data(working_directory_path, dataset_file_name, graph_directory, 
         
         # Re-shuffle the training set each epoch. The generator is seeded from the random seed
         # so a shuffled run is still reproducible; turn the checkbox off for a fixed batch order.
-        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=bool(shuffle_training_data),
-                                      generator=torch.Generator().manual_seed(random_seed))
+        train_dataloader = make_loader(train_dataset, batch_size, shuffle=shuffle_training_data,
+                                       seed=random_seed, loader_workers=loader_workers,
+                                       pin_memory=pin_memory, loader_class=DataLoader)
         # Validation and test order does not affect the metrics, so leave them deterministic.
-        val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
-        test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
+        val_dataloader = make_loader(val_dataset, batch_size, seed=random_seed, loader_workers=loader_workers,
+                                      pin_memory=pin_memory, loader_class=DataLoader)
+        test_dataloader = make_loader(test_dataset, batch_size, seed=random_seed, loader_workers=loader_workers,
+                                      pin_memory=pin_memory, loader_class=DataLoader)
         
         status = (f"Data processed: {total_len} molecules. {split_method} split: "
                   f"{len(train_dataset)} training, {len(val_dataset)} validation, "
@@ -290,6 +295,7 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed,
             gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False), \
             model, train_losses, val_losses, trained_epochs
     except Exception as exc:
+        model = None
         status = f"Error creating model: {exc}"
         return f"<span style='color: red;'>{status}</span>", \
             gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), \
@@ -364,17 +370,17 @@ def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learnin
 # Define the train function
 def train(model, dataloader, device, datatype, optimizer):
     model.train()
-    total_loss = 0.0
+    total_loss = torch.zeros((), device=device, dtype=torch.float64)
     num_samples = 0
 
     for batch in dataloader:
         # Get input data
-        z = batch.z.to(device=device, dtype=torch.long)
-        pos = batch.pos.to(device=device, dtype=datatype)
-        batch_index = batch.batch.to(device=device)
+        z = batch.z.to(device=device, dtype=torch.long, non_blocking=True)
+        pos = batch.pos.to(device=device, dtype=datatype, non_blocking=True)
+        batch_index = batch.batch.to(device=device, non_blocking=True)
 
         # Get target labels
-        y = batch.y.to(device=device, dtype=datatype)
+        y = batch.y.to(device=device, dtype=datatype, non_blocking=True)
         
         # Forward pass
         optimizer.zero_grad()
@@ -389,26 +395,26 @@ def train(model, dataloader, device, datatype, optimizer):
         loss.backward()
         optimizer.step()
         # Weight by batch size so the epoch loss does not depend on how the final batch is sized.
-        total_loss += loss.item() * y.shape[0]
+        total_loss += loss.detach().to(torch.float64) * y.shape[0]
         num_samples += y.shape[0]
 
-    return total_loss / num_samples if num_samples > 0 else 0.0
+    return total_loss.item() / num_samples if num_samples > 0 else 0.0
 
 # Define the validation function
 @torch.no_grad()
 def validation(model, dataloader, device, datatype):
     model.eval()
-    total_loss = 0.0
+    total_loss = torch.zeros((), device=device, dtype=torch.float64)
     num_samples = 0
 
     for batch in dataloader:
         # Get input data
-        z = batch.z.to(device=device, dtype=torch.long)
-        pos = batch.pos.to(device=device, dtype=datatype)
-        batch_index = batch.batch.to(device=device)
+        z = batch.z.to(device=device, dtype=torch.long, non_blocking=True)
+        pos = batch.pos.to(device=device, dtype=datatype, non_blocking=True)
+        batch_index = batch.batch.to(device=device, non_blocking=True)
         
         # Get target labels
-        y = batch.y.to(device=device, dtype=datatype)
+        y = batch.y.to(device=device, dtype=datatype, non_blocking=True)
         
         with torch.no_grad():
             # Forward pass
@@ -420,10 +426,10 @@ def validation(model, dataloader, device, datatype):
             loss = loss_fn(output, y)
             if not torch.isfinite(loss):
                 raise ValueError("Validation loss is not finite. Try a lower learning rate or float32 data type.")
-            total_loss += loss.item() * y.shape[0]
+            total_loss += loss.detach().to(torch.float64) * y.shape[0]
         num_samples += y.shape[0]
 
-    return total_loss / num_samples if num_samples > 0 else 0.0
+    return total_loss.item() / num_samples if num_samples > 0 else 0.0
 
 def on_train(model, train_dataloader, val_dataloader, device, datatype, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, progress=gr.Progress()):
     loss_epochs = None
@@ -486,9 +492,9 @@ def test(model, dataloader, device, datatype):
     
     for batch in dataloader:
         # Get input data
-        z = batch.z.to(device=device, dtype=torch.long)
-        pos = batch.pos.to(device=device, dtype=datatype)
-        batch_index = batch.batch.to(device=device)
+        z = batch.z.to(device=device, dtype=torch.long, non_blocking=True)
+        pos = batch.pos.to(device=device, dtype=datatype, non_blocking=True)
+        batch_index = batch.batch.to(device=device, non_blocking=True)
 
         # Get target labels
         y = batch.y
@@ -588,13 +594,14 @@ def on_export_metrics(working_directory_path, file_name, eval_df, dataset):
         status = f"Error exporting test metrics: {exc}"
         return f"<span style='color: red;'>{html.escape(status)}</span>", gr.update()
 
-def on_process_prediction_data(working_directory_path, prediction_dataset_file, prediction_graph_directory, datatype, batch_size):
+def on_process_prediction_data(working_directory_path, prediction_dataset_file, prediction_graph_directory, datatype, batch_size, graph_cache_mb=128, loader_workers=0, pin_memory=False):
     try:
         # Process the prediction dataset and create a dataloader
         prediction_dataset_file_path = os.path.join(working_directory_path, prediction_dataset_file)
         prediction_graph_directory_path = os.path.join(working_directory_path, prediction_graph_directory)                                       
-        prediction_dataset = MolecularDataset3D(prediction_dataset_file_path, prediction_graph_directory_path, datatype)
-        prediction_dataloader = DataLoader(prediction_dataset, batch_size=batch_size)
+        prediction_dataset = MolecularDataset3D(prediction_dataset_file_path, prediction_graph_directory_path, datatype, graph_cache_bytes=cache_budget_bytes(graph_cache_mb))
+        prediction_dataloader = make_loader(prediction_dataset, batch_size, loader_workers=loader_workers,
+                                      pin_memory=pin_memory, loader_class=DataLoader)
         
         status = "Prediction data processed successfully."
         return f"<span style='color: green;'>{status}</span>", prediction_dataset, prediction_dataloader, gr.update(interactive=True)
@@ -611,9 +618,9 @@ def predict(model, dataloader, device, datatype):
     
     for batch in dataloader:
         # Get input data
-        z = batch.z.to(device=device, dtype=torch.long)
-        pos = batch.pos.to(device=device, dtype=datatype)
-        batch_index = batch.batch.to(device=device)
+        z = batch.z.to(device=device, dtype=torch.long, non_blocking=True)
+        pos = batch.pos.to(device=device, dtype=datatype, non_blocking=True)
+        batch_index = batch.batch.to(device=device, non_blocking=True)
         
         with torch.no_grad():
             # Forward pass
@@ -674,6 +681,7 @@ def binary_classification_3d_tab_content():
                                                          info="Folders in Data/Classification. Select one or enter a new folder name.")
                 working_directory_path_state = gr.State()
                 open_working_directory_button = gr.Button(value="Create/Open Working Directory")
+                release_run_button = gr.Button(value="Release current run")
                 working_directory_content_list_state = gr.State()
                 working_directory_content_list_dataframe = gr.Dataframe(label="Contents in Working Directory", headers=["Name", "Type", "Modified"], max_height=600, interactive=False)
             with gr.Column(scale=3):
@@ -721,6 +729,7 @@ def binary_classification_3d_tab_content():
                             train_dataloader_state = gr.State()
                             val_dataloader_state = gr.State()
                             test_dataloader_state = gr.State()
+                    graph_cache_mb, loader_workers, pin_memory = build_loader_controls()
                     split_context_state = gr.State()
                     similarity_controls = build_similarity_controls()
                 with gr.Accordion("3D GNN Model"):
@@ -837,13 +846,14 @@ def binary_classification_3d_tab_content():
                                     prediction_file_name_textbox = gr.Textbox(label="File name", value="prediction")
                                     export_prediction_button = gr.Button(value="Export", interactive=False)
                             with gr.Row(): 
-                                prediction_dataframe = gr.DataFrame(label="Prediction", wrap=False, interactive=False)
+                                prediction_dataframe = gr.DataFrame(label="Prediction preview (first 200 rows)", wrap=False, interactive=False)
+                            prediction_df_state = gr.State()
 
     # Working directory interactions
     concurrency_id = "classification_3d-" + str(split_context_state._id)
     directory_resets = directory_reset_updates(
         clear_states=[split_context_state, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state,
-                      model_state, optimizer_state, schedular_state, evaluation_df_state, prediction_dataset_state,
+                      model_state, optimizer_state, schedular_state, evaluation_df_state, prediction_df_state, prediction_dataset_state,
                       prediction_dataloader_state],
         loss_states=[train_losses_state, val_losses_state], epoch_state=trained_epochs_state,
         disable_buttons=[create_model_button, create_optimizer_button, train_button, evaluate_button,
@@ -852,6 +862,7 @@ def binary_classification_3d_tab_content():
         clear_components=[run_directory_textbox, dataset_preview_dataframe, training_plot, evaluation_metrics_dataframe, confusion_matrix_plot, roc_auc_curve_plot,
                           prediction_dataframe], similarity_controls=similarity_controls,
     )
+    bind_release_run(release_run_button, status_html, directory_resets, concurrency_id=concurrency_id)
     directory_refresh_inputs = [working_directory_path_state, dataset_name_textbox, graph_directory_textbox, checkpoint_file_dropdown]
     directory_refresh_outputs = [working_directory_content_list_dataframe,
                                  dataset_file_feature_extraction_dropdown, graph_directory_dropdown, dataset_file_process_data_dropdown, checkpoint_file_dropdown, prediction_dataset_file_dropdown, prediction_graph_directory_dropdown]
@@ -882,9 +893,9 @@ def binary_classification_3d_tab_content():
     # Process data interactions
     bind_data_processing(
         process_data_button, capture_split_outputs(on_process_data, 2, similarity_controls),
-        [working_directory_path_state, dataset_file_process_data_dropdown, graph_directory_dropdown, datatype_state, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, data_split_seed_slider, split_method_radio],
+        [working_directory_path_state, dataset_file_process_data_dropdown, graph_directory_dropdown, datatype_state, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, data_split_seed_slider, split_method_radio, graph_cache_mb, loader_workers, pin_memory],
         [status_html, create_model_button, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state, split_context_state, *similarity_controls.reset_outputs],
-        clear_states=[model_state, optimizer_state, schedular_state, evaluation_df_state,
+        clear_states=[model_state, optimizer_state, schedular_state, evaluation_df_state, prediction_df_state,
                       prediction_dataset_state, prediction_dataloader_state],
         loss_states=[train_losses_state, val_losses_state], epoch_state=trained_epochs_state, concurrency_id=concurrency_id,
         disable_buttons=[create_optimizer_button, train_button, evaluate_button,
@@ -897,15 +908,15 @@ def binary_classification_3d_tab_content():
     # Create model interactions
     result_reset = dict(
         concurrency_id=concurrency_id,
-        clear_states=[evaluation_df_state],
+        clear_states=[evaluation_df_state, prediction_df_state],
         disable_buttons=[export_evaluation_button, export_metrics_button, export_prediction_button],
         clear_components=[evaluation_metrics_dataframe, confusion_matrix_plot, roc_auc_curve_plot, prediction_dataframe],
     )
-    bind_result_invalidation(create_model_button, show_model_run(on_create_model, 7), [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, model_random_seed_slider,
+    bind_result_invalidation(create_model_button, reset_created_optimizer(show_model_run(on_create_model, 7)), [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, model_random_seed_slider,
                                                 schnet_n_hiddens, schnet_n_filters, schnet_n_interactions, schnet_n_gaussians, schnet_cutoff, schnet_max_num_neighbors, schnet_readout, schnet_dipole,
                                                 dimenetplusplus_n_hiddens, dimenetplusplus_n_blocks, dimenetplusplus_int_emb_size, dimenetplusplus_basis_emb_size, dimenetplusplus_out_emb_channels, dimenetplusplus_n_spherical, dimenetplusplus_n_radial, dimenetplusplus_cutoff, dimenetplusplus_max_num_neighbors, dimenetplusplus_envelope_exponent, dimenetplusplus_n_output_layers,
                                                 visnet_n_hiddens, visnet_n_heads, visnet_n_layers, visnet_num_rbf, visnet_trainable_rbf, visnet_max_z, visnet_cutoff, visnet_max_num_neighbors, visnet_vertex, model_name_textbox],
-                                                [status_html, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state, run_directory_textbox], **result_reset)
+                                                [status_html, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state, run_directory_textbox, optimizer_state, schedular_state, training_plot, export_losses_button], **result_reset)
     bind_checkpoint_save(save_checkpoint_button, on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state], [status_html, working_directory_content_list_state], checkpoint_file_dropdown, concurrency_id=concurrency_id)
     bind_result_invalidation(load_checkpoint_button, reset_checkpoint_optimizer(show_model_run(on_load_checkpoint, 1, restore_controls=True)), [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, optimizer_state, schedular_state], [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, run_directory_textbox, model_name_textbox, model_random_seed_slider, optimizer_state, schedular_state, train_button, training_plot, export_losses_button], **result_reset)
     
@@ -923,9 +934,9 @@ def binary_classification_3d_tab_content():
     export_metrics_button.click(route_model_export(on_export_metrics), [working_directory_path_state, metrics_file_name_textbox, evaluation_df_state, dataset_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
         
     # Make prediction interactions
-    process_prediction_data_button.click(on_process_prediction_data, [working_directory_path_state, prediction_dataset_file_dropdown, prediction_graph_directory_dropdown, datatype_state, batch_size_dropdown], [status_html, prediction_dataset_state, prediction_dataloader_state, predict_button], concurrency_id=concurrency_id)
-    predict_button.click(on_predict, [model_state, dataset_state, prediction_dataloader_state, device_dropdown, datatype_state],
-                                     [status_html, prediction_dataframe, export_prediction_button], concurrency_id=concurrency_id)
-    export_prediction_button.click(route_model_export(on_export_prediction), [working_directory_path_state, prediction_file_name_textbox, prediction_dataframe, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
+    bind_result_invalidation(process_prediction_data_button, on_process_prediction_data, [working_directory_path_state, prediction_dataset_file_dropdown, prediction_graph_directory_dropdown, datatype_state, batch_size_dropdown, graph_cache_mb, loader_workers, pin_memory], [status_html, prediction_dataset_state, prediction_dataloader_state, predict_button], clear_states=[prediction_df_state], disable_buttons=[export_prediction_button], clear_components=[prediction_dataframe], concurrency_id=concurrency_id)
+    predict_button.click(cache_prediction_rows(on_predict), [model_state, dataset_state, prediction_dataloader_state, device_dropdown, datatype_state],
+                                     [status_html, prediction_dataframe, export_prediction_button, prediction_df_state], concurrency_id=concurrency_id)
+    export_prediction_button.click(route_model_export(on_export_prediction), [working_directory_path_state, prediction_file_name_textbox, prediction_df_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
     
     return binary_classification_3d_tab

@@ -43,6 +43,8 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
     optimizer_state, scheduler_state = optimizer_creation.outputs[1:3]
     evaluation_state = evaluation.outputs[1]
     prediction_states = prediction_processing.outputs[1:3]
+    prediction_rows_state = prediction.outputs[-1]
+    assert isinstance(prediction_rows_state, gr.State)
 
     values = dict(working_directory_path=str(split_workdir), dataset_file_name="dataset.csv",
                   load_data="Molecular fingerprints", graph_directory="GRAPH_graphs",
@@ -50,7 +52,9 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
                   dimensionality_reduction=False, variance_threshold=0.0, pca_num_components=2,
                   test_ratio=0.25, val_ratio=0.25, batch_size=2, shuffle_training_data=False,
                   random_seed=17, split_method="Random")
-    arguments = {name: values[name] for name in inspect.signature(processing.fn).parameters}
+    arguments = {name: values.get(name, component.value)
+                 for name, component in zip(inspect.signature(processing.fn).parameters,
+                                            processing.inputs, strict=True)}
     previous = processing.fn(**arguments)
     assert isinstance(previous, dict)
     assert is_ok(previous[processing.outputs[0]])
@@ -78,6 +82,7 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
                   val_losses_state: stale_val_losses, epoch_state: 1,
                   similarity_state: similarity,
                   evaluation_state: pd.DataFrame({"old_prediction": [1.0]}),
+                  prediction_rows_state: pd.DataFrame({"old_prediction": [1.0]}),
                   **{component: object() for component in prediction_states}}
 
     arguments["split_method"] = "Scaffold"
@@ -90,7 +95,7 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
     session = {**previous, **old_states, **result}
 
     for component in (model_state, optimizer_state, scheduler_state,
-                      evaluation_state, similarity_state, *prediction_states):
+                      evaluation_state, prediction_rows_state, similarity_state, *prediction_states):
         assert session[component] is None
     assert session[train_losses_state] == session[val_losses_state] == []
     assert session[train_losses_state] is not stale_train_losses
@@ -111,7 +116,7 @@ def test_processing_new_split_invalidates_previous_training_and_results(split_wo
     assert all(result[button].get("interactive") is False for button in export_buttons)
     for component in blocks.blocks.values():
         if isinstance(component, gr.Plot) or (isinstance(component, gr.Dataframe)
-                                             and component.label in ("Evaluation metrics", "Prediction")) \
+                                             and component.label in ("Evaluation metrics", "Prediction preview (first 200 rows)")) \
                 or getattr(component, "label", None) == "Model summary":
             assert result[component].get("value", "not cleared") is None
     assert result[prediction.outputs[1]].get("value", "not cleared") is None

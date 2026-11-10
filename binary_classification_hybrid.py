@@ -4,7 +4,6 @@ import time
 import pandas as pd
 import gradio as gr
 import torch
-from torch_geometric.nn import summary
 from torch_geometric.loader import DataLoader
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.decomposition import PCA
@@ -12,11 +11,13 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, auc, roc_c
 from feature_provenance import capture_prediction_features, ensure_prediction_features
 from evaluation_metrics import classification_metrics, metrics_from_predictions
 from matplotlib import pyplot as plt
-from datasets import MolecularDataset
+from datasets import MolecularDataset, prepare_dataset
+from gnn_runtime import (make_loader, cache_budget_bytes, hybrid_graph_inputs,
+                         batch_fingerprints, batch_targets, safe_model_summary)
 from ui_utils import bind_data_processing, bind_result_invalidation
 from update_dataset import build_dataset_upload_controls, upload_dataset
 import feature_extraction
-from gnn_run_ui import attach_model_run, capture_split_outputs, route_model_export, bind_working_directory, load_run_checkpoint, ensure_model_split, directory_reset_updates, show_model_run, capture_feature_sources, bind_artifact_update, bind_checkpoint_save, reset_checkpoint_optimizer, loss_epoch_numbers
+from gnn_run_ui import reset_created_optimizer, cache_prediction_rows, bind_release_run, build_loader_controls, attach_model_run, capture_split_outputs, route_model_export, bind_working_directory, load_run_checkpoint, ensure_model_split, directory_reset_updates, show_model_run, capture_feature_sources, bind_artifact_update, bind_checkpoint_save, reset_checkpoint_optimizer, loss_epoch_numbers
 from run_utils import make_split_context, ensure_run_directory, list_saved_models, resolve_saved_model, validate_seed
 from similarity_ui import build_similarity_controls, bind_similarity_controls
 from models import *
@@ -191,7 +192,7 @@ def on_extract_molecule_fingerprints(working_directory_path, dataset_file_name, 
 def on_dimensionality_reduction_change(dimensionality_reduction_enabled):
     return gr.update(visible=dimensionality_reduction_enabled), gr.update(visible=dimensionality_reduction_enabled)
 
-def on_process_data(working_directory_path, dataset_file_name, load_data, graph_directory, molecular_fingerprint_directory, datatype, dimensionality_reduction, variance_threshold, pca_num_components, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed, split_method="Random"):
+def on_process_data(working_directory_path, dataset_file_name, load_data, graph_directory, molecular_fingerprint_directory, datatype, dimensionality_reduction, variance_threshold, pca_num_components, test_ratio, val_ratio, batch_size, shuffle_training_data, random_seed, split_method="Random", graph_cache_mb=128, loader_workers=0, pin_memory=False):
     try:
         # Validate inputs
         random_seed = validate_seed(random_seed)
@@ -225,7 +226,7 @@ def on_process_data(working_directory_path, dataset_file_name, load_data, graph_
         molecular_fingerprint_directory_path = (os.path.join(working_directory_path, sanitize_path_component(molecular_fingerprint_directory, "molecular fingerprint directory"))
                                                 if load_data in ('Molecular fingerprints', 'Both') else None)
 
-        dataset = MolecularDataset(dataset_file_path, load_data, graph_directory_path, molecular_fingerprint_directory_path, datatype)
+        dataset = MolecularDataset(dataset_file_path, load_data, graph_directory_path, molecular_fingerprint_directory_path, datatype, graph_cache_bytes=cache_budget_bytes(graph_cache_mb))
         
         total_len = len(dataset)
         capture_feature_sources(dataset, graph_directory_path, molecular_fingerprint_directory_path)
@@ -238,24 +239,28 @@ def on_process_data(working_directory_path, dataset_file_name, load_data, graph_
 
         # Re-shuffle the training set each epoch. The generator is seeded from the random seed
         # so a shuffled run is still reproducible; turn the checkbox off for a fixed batch order.
-        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=bool(shuffle_training_data),
-                                      generator=torch.Generator().manual_seed(random_seed))
+        train_dataloader = make_loader(train_dataset, batch_size, shuffle=shuffle_training_data,
+                                       seed=random_seed, loader_workers=loader_workers,
+                                       pin_memory=pin_memory, loader_class=DataLoader)
         # Validation and test order does not affect the metrics, so leave them deterministic.
-        val_dataloader = DataLoader(val_dataset, batch_size=batch_size)
-        test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
+        val_dataloader = make_loader(val_dataset, batch_size, seed=random_seed, loader_workers=loader_workers,
+                                      pin_memory=pin_memory, loader_class=DataLoader)
+        test_dataloader = make_loader(test_dataset, batch_size, seed=random_seed, loader_workers=loader_workers,
+                                      pin_memory=pin_memory, loader_class=DataLoader)
         
         # Set up feature transformers (fit on training split only to avoid leakage).
         # The checkbox is only hidden - not reset - when fingerprints are not loaded, so ignore it here.
         if dimensionality_reduction and load_data in ('Molecular fingerprints', 'Both'):
             variance_threshold = VarianceThreshold(variance_threshold)
             pca = PCA(n_components=pca_num_components, random_state=random_seed)
-            fingerprint_df = pd.read_csv(os.path.join(molecular_fingerprint_directory_path, "molecular_fingerprints.csv"))
-            train_fingerprints = fingerprint_df.drop(columns=['SMILES']).iloc[train_dataset.indices].values
+            train_fingerprints = dataset.fingerprint_df.iloc[train_dataset.indices, 1:].to_numpy()
             train_fingerprints_variance_thresholded = variance_threshold.fit_transform(train_fingerprints)
             pca.fit(train_fingerprints_variance_thresholded)
         else:
             variance_threshold = None
             pca = None
+
+        prepare_dataset(dataset, variance_threshold, pca)
 
         target_column_names = dataset.target_column_names
 
@@ -446,12 +451,14 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
         trained_epochs = 0
         
         # Prepare a sample for model summary
+        prepare_dataset(dataset, variance_threshold, pca, datatype=datatype, prepare_targets=False)
+        need_edge_attr = model_requires_edge_attr(model)
         data = dataset[0]
         
         if dataset.load_data == 'Graphs':
             x = data.x.to(device=device, dtype=datatype)
             edge_index = data.edge_index.long().to(device=device)
-            edge_attr = data.edge_attr.to(device=device, dtype=datatype)
+            edge_attr = data.edge_attr.to(device=device, dtype=datatype) if need_edge_attr else None
             fingerprint = None
         elif dataset.load_data == 'Molecular fingerprints':
             x = None
@@ -461,29 +468,22 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
         else: # Both
             x = data.x.to(device=device, dtype=datatype)
             edge_index = data.edge_index.long().to(device=device)
-            edge_attr = data.edge_attr.to(device=device, dtype=datatype)
+            edge_attr = data.edge_attr.to(device=device, dtype=datatype) if need_edge_attr else None
             fingerprint = data.fp
         
         batch_index = torch.zeros(x.size(0), device=device, dtype=torch.long) if x is not None else None
         
-        if fingerprint is not None:
-            if variance_threshold is not None and pca is not None:
-                fingerprint_variance_thresholded = variance_threshold.transform(fingerprint.reshape(1, -1).double().numpy())
-                fingerprint_pca = pca.transform(fingerprint_variance_thresholded)
-                fingerprint_tensor = torch.tensor(fingerprint_pca).to(device=device, dtype=datatype)
-            else:
-                fingerprint_tensor = torch.tensor(fingerprint.reshape(1, -1)).to(device=device, dtype=datatype)
-        else:
-            fingerprint_tensor = None
+        fingerprint_tensor = (batch_fingerprints(data, device, datatype, variance_threshold, pca)
+                              if fingerprint is not None else None)
 
         # Model summary
         need_edge_attr = model_requires_edge_attr(model)
         if dataset.load_data == 'Molecular fingerprints':
-            model_summary = summary(model, fingerprint_tensor)
+            model_summary = safe_model_summary(model, fingerprint_tensor)
         elif need_edge_attr:
-            model_summary = summary(model, x, edge_index, edge_attr, batch_index, fingerprint_tensor)
+            model_summary = safe_model_summary(model, x, edge_index, edge_attr, batch_index, fingerprint_tensor)
         else:
-            model_summary = summary(model, x, edge_index, batch_index, fingerprint_tensor)
+            model_summary = safe_model_summary(model, x, edge_index, batch_index, fingerprint_tensor)
         
         attach_model_run(model, dataset, model_name, random_seed, "classification_hybrid", run_parameters)
         status = "Model created successfully. Create an optimizer to start training."
@@ -493,6 +493,7 @@ def on_create_model(dataset, gnn_model_tab, device, datatype, random_seed, varia
             gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False), \
             model, train_losses, val_losses, trained_epochs
     except Exception as exc:
+        model = None
         status = f"Error creating model: {exc}"
         return f"<span style='color: red;'>{status}</span>", None, \
             gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), \
@@ -572,35 +573,19 @@ def on_create_optimizer(model, optimizer_dropdown, learning_rate_slider, learnin
 # Define the train function
 def train(model, dataset, dataloader, device, datatype, optimizer, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.train()
-    total_loss = 0.0
+    prepare_dataset(getattr(dataloader, "dataset", dataloader), variance_threshold, pca, datatype=datatype)
+    total_loss = torch.zeros((), device=device, dtype=torch.float64)
     num_samples = 0
     need_edge_attr = model_requires_edge_attr(model)
     
     for batch in dataloader:
-        # Get input data
-        if dataset.load_data == 'Graphs' or dataset.load_data == 'Both':
-            x = batch.x.to(device=device, dtype=datatype)
-            edge_index = batch.edge_index.long().to(device=device)
-            edge_attr = batch.edge_attr.to(device=device, dtype=datatype)
-            batch_index = batch.batch.to(device=device)
-        else:
-            x = None
-            edge_index = None
-            edge_attr = None
-            batch_index = None
-        if dataset.load_data == 'Molecular fingerprints' or dataset.load_data == 'Both':
-            fingerprints = batch.fp
-            if variance_threshold is not None and pca is not None:
-                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints.double().numpy())
-                fingerprints_pca = pca.transform(fingerprints_variance_thresholded)
-                fingerprints_tensor = torch.tensor(fingerprints_pca).to(device=device, dtype=datatype)
-            else:
-                fingerprints_tensor = fingerprints.to(device=device, dtype=datatype)
-        else:
-            fingerprints_tensor = None
+        x, edge_index, edge_attr, batch_index = hybrid_graph_inputs(
+            batch, dataset.load_data, need_edge_attr, device, datatype)
+        fingerprints_tensor = (batch_fingerprints(batch, device, datatype, variance_threshold, pca)
+                               if dataset.load_data in ('Molecular fingerprints', 'Both') else None)
 
         # Get target labels
-        y = batch.y.to(device=device, dtype=datatype)
+        y = batch.y.to(device=device, dtype=datatype, non_blocking=True)
         
         # Forward pass
         optimizer.zero_grad()
@@ -618,44 +603,28 @@ def train(model, dataset, dataloader, device, datatype, optimizer, gnn_model_tab
         loss.backward()
         optimizer.step()
         # Weight by batch size so the epoch loss does not depend on how the final batch is sized.
-        total_loss += loss.item() * y.shape[0]
+        total_loss += loss.detach().to(torch.float64) * y.shape[0]
         num_samples += y.shape[0]
 
-    return total_loss / num_samples if num_samples > 0 else 0.0
+    return total_loss.item() / num_samples if num_samples > 0 else 0.0
 
 # Define the validation function
 @torch.no_grad()
 def validation(model, dataset, dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.eval()
-    total_loss = 0.0
+    prepare_dataset(getattr(dataloader, "dataset", dataloader), variance_threshold, pca, datatype=datatype)
+    total_loss = torch.zeros((), device=device, dtype=torch.float64)
     num_samples = 0
     need_edge_attr = model_requires_edge_attr(model)
     
     for batch in dataloader:
-        # Get input data
-        if dataset.load_data == 'Graphs' or dataset.load_data == 'Both':
-            x = batch.x.to(device=device, dtype=datatype)
-            edge_index = batch.edge_index.long().to(device=device)
-            edge_attr = batch.edge_attr.to(device=device, dtype=datatype)
-            batch_index = batch.batch.to(device=device)
-        else:
-            x = None
-            edge_index = None
-            edge_attr = None
-            batch_index = None
-        if dataset.load_data == 'Molecular fingerprints' or dataset.load_data == 'Both':
-            fingerprints = batch.fp
-            if variance_threshold is not None and pca is not None:
-                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints.double().numpy())
-                fingerprints_pca = pca.transform(fingerprints_variance_thresholded)
-                fingerprints_tensor = torch.tensor(fingerprints_pca).to(device=device, dtype=datatype)
-            else:
-                fingerprints_tensor = fingerprints.to(device=device, dtype=datatype)
-        else:
-            fingerprints_tensor = None
+        x, edge_index, edge_attr, batch_index = hybrid_graph_inputs(
+            batch, dataset.load_data, need_edge_attr, device, datatype)
+        fingerprints_tensor = (batch_fingerprints(batch, device, datatype, variance_threshold, pca)
+                               if dataset.load_data in ('Molecular fingerprints', 'Both') else None)
         
         # Get target labels
-        y = batch.y.to(device=device, dtype=datatype)
+        y = batch.y.to(device=device, dtype=datatype, non_blocking=True)
         
         with torch.no_grad():
             # Forward pass
@@ -670,10 +639,10 @@ def validation(model, dataset, dataloader, device, datatype, gnn_model_tab, cust
             loss = loss_fn(output, y)
             if not torch.isfinite(loss):
                 raise ValueError("Validation loss is not finite. Try a lower learning rate or float32 data type.")
-            total_loss += loss.item() * y.shape[0]
+            total_loss += loss.detach().to(torch.float64) * y.shape[0]
         num_samples += y.shape[0]
 
-    return total_loss / num_samples if num_samples > 0 else 0.0
+    return total_loss.item() / num_samples if num_samples > 0 else 0.0
 
 def on_train(model, dataset, train_dataloader, val_dataloader, device, datatype, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca, progress=gr.Progress()):
     loss_epochs = None
@@ -730,33 +699,17 @@ def on_export_losses(working_directory_path, file_name, train_losses, val_losses
 @torch.no_grad()
 def test(model, dataset, dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.eval()
+    prepare_dataset(getattr(dataloader, "dataset", dataloader), variance_threshold, pca, datatype=datatype)
     y_test_list = []
     logits_list = []
     smiles_list = []
     need_edge_attr = model_requires_edge_attr(model)
     
     for batch in dataloader:
-        # Get input data
-        if dataset.load_data == 'Graphs' or dataset.load_data == 'Both':
-            x = batch.x.to(device=device, dtype=datatype)
-            edge_index = batch.edge_index.long().to(device=device)
-            edge_attr = batch.edge_attr.to(device=device, dtype=datatype)
-            batch_index = batch.batch.to(device=device)
-        else:
-            x = None
-            edge_index = None
-            edge_attr = None
-            batch_index = None
-        if dataset.load_data == 'Molecular fingerprints' or dataset.load_data == 'Both':
-            fingerprints = batch.fp
-            if variance_threshold is not None and pca is not None:
-                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints.double().numpy())
-                fingerprints_pca = pca.transform(fingerprints_variance_thresholded)
-                fingerprints_tensor = torch.tensor(fingerprints_pca).to(device=device, dtype=datatype)
-            else:
-                fingerprints_tensor = fingerprints.to(device=device, dtype=datatype)
-        else:
-            fingerprints_tensor = None
+        x, edge_index, edge_attr, batch_index = hybrid_graph_inputs(
+            batch, dataset.load_data, need_edge_attr, device, datatype)
+        fingerprints_tensor = (batch_fingerprints(batch, device, datatype, variance_threshold, pca)
+                               if dataset.load_data in ('Molecular fingerprints', 'Both') else None)
 
         # Get target labels
         y = batch.y
@@ -879,7 +832,7 @@ def on_export_evaluation(working_directory_path, file_name, eval_df):
         status = f"Error exporting evaluation: {exc}"
         return f"<span style='color: red;'>{escape(status)}</span>", gr.update()
 
-def on_process_prediction_data(working_directory_path, prediction_dataset_file, dataset, prediction_graph_directory, prediction_molecular_fingerprint_directory, datatype, batch_size):
+def on_process_prediction_data(working_directory_path, prediction_dataset_file, dataset, prediction_graph_directory, prediction_molecular_fingerprint_directory, datatype, batch_size, graph_cache_mb=128, loader_workers=0, pin_memory=False):
     try:
         if dataset is None:
             raise ValueError("Please process the training data first.")
@@ -890,9 +843,10 @@ def on_process_prediction_data(working_directory_path, prediction_dataset_file, 
                                            if dataset.load_data in ('Graphs', 'Both') else None)
         prediction_molecular_fingerprint_directory_path = (os.path.join(working_directory_path, sanitize_path_component(prediction_molecular_fingerprint_directory, "molecular fingerprint directory"))
                                                            if dataset.load_data in ('Molecular fingerprints', 'Both') else None)
-        prediction_dataset = MolecularDataset(prediction_dataset_file_path, dataset.load_data, prediction_graph_directory_path, prediction_molecular_fingerprint_directory_path, datatype)
+        prediction_dataset = MolecularDataset(prediction_dataset_file_path, dataset.load_data, prediction_graph_directory_path, prediction_molecular_fingerprint_directory_path, datatype, graph_cache_bytes=cache_budget_bytes(graph_cache_mb))
         capture_prediction_features(prediction_dataset, prediction_molecular_fingerprint_directory_path)
-        prediction_dataloader = DataLoader(prediction_dataset, batch_size=batch_size)
+        prediction_dataloader = make_loader(prediction_dataset, batch_size, loader_workers=loader_workers,
+                                      pin_memory=pin_memory, loader_class=DataLoader)
         
         status = "Prediction data processed successfully."
         return f"<span style='color: green;'>{status}</span>", prediction_dataset, prediction_dataloader, gr.update(interactive=True)
@@ -904,32 +858,16 @@ def on_process_prediction_data(working_directory_path, prediction_dataset_file, 
 @torch.no_grad()
 def predict(model, dataset, dataloader, device, datatype, gnn_model_tab, customgcn_convolutional_layer_name, variance_threshold, pca):
     model.eval()
+    prepare_dataset(getattr(dataloader, "dataset", dataloader), variance_threshold, pca, datatype=datatype)
     smiles_list = []
     logits_list = []
     need_edge_attr = model_requires_edge_attr(model)
     
     for batch in dataloader:
-        # Get input data
-        if dataset.load_data == 'Graphs' or dataset.load_data == 'Both':
-            x = batch.x.to(device=device, dtype=datatype)
-            edge_index = batch.edge_index.long().to(device=device)
-            edge_attr = batch.edge_attr.to(device=device, dtype=datatype)
-            batch_index = batch.batch.to(device=device)
-        else:
-            x = None
-            edge_index = None
-            edge_attr = None
-            batch_index = None
-        if dataset.load_data == 'Molecular fingerprints' or dataset.load_data == 'Both':
-            fingerprints = batch.fp
-            if variance_threshold is not None and pca is not None:
-                fingerprints_variance_thresholded = variance_threshold.transform(fingerprints.double().numpy())
-                fingerprints_pca = pca.transform(fingerprints_variance_thresholded)
-                fingerprints_tensor = torch.tensor(fingerprints_pca).to(device=device, dtype=datatype)
-            else:
-                fingerprints_tensor = fingerprints.to(device=device, dtype=datatype)
-        else:
-            fingerprints_tensor = None
+        x, edge_index, edge_attr, batch_index = hybrid_graph_inputs(
+            batch, dataset.load_data, need_edge_attr, device, datatype)
+        fingerprints_tensor = (batch_fingerprints(batch, device, datatype, variance_threshold, pca)
+                               if dataset.load_data in ('Molecular fingerprints', 'Both') else None)
         
         with torch.no_grad():
             # Forward pass
@@ -996,6 +934,7 @@ def binary_classification_hybrid_tab_content():
                                                          info="Folders in Data/Classification. Select one or enter a new folder name.")
                 working_directory_path_state = gr.State()
                 open_working_directory_button = gr.Button(value="Create/Open Working Directory")
+                release_run_button = gr.Button(value="Release current run")
                 working_directory_content_list_state = gr.State()
                 working_directory_content_list_dataframe = gr.Dataframe(label="Contents in Working Directory", headers=["Name", "Type", "Modified"], max_height=600, interactive=False)
             with gr.Column(scale=3):
@@ -1054,6 +993,7 @@ def binary_classification_hybrid_tab_content():
                             test_dataloader_state = gr.State()
                             variance_threshold_state = gr.State()
                             pca_state = gr.State()
+                    graph_cache_mb, loader_workers, pin_memory = build_loader_controls()
                     split_context_state = gr.State()
                     similarity_controls = build_similarity_controls()
                 with gr.Accordion("Model"):
@@ -1190,13 +1130,14 @@ def binary_classification_hybrid_tab_content():
                                     prediction_file_name_textbox = gr.Textbox(label="File name", value="prediction")
                                     export_prediction_button = gr.Button(value="Export", interactive=False)
                             with gr.Row(): 
-                                prediction_dataframe = gr.DataFrame(label="Prediction", wrap=False, interactive=False)
+                                prediction_dataframe = gr.DataFrame(label="Prediction preview (first 200 rows)", wrap=False, interactive=False)
+                            prediction_df_state = gr.State()
 
     # Working directory interactions
     concurrency_id = "classification_hybrid-" + str(split_context_state._id)
     directory_resets = directory_reset_updates(
         clear_states=[split_context_state, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state,
-                      model_state, optimizer_state, schedular_state, evaluation_df_state, prediction_dataset_state,
+                      model_state, optimizer_state, schedular_state, evaluation_df_state, prediction_df_state, prediction_dataset_state,
                       prediction_dataloader_state, variance_threshold_state, pca_state],
         loss_states=[train_losses_state, val_losses_state], epoch_state=trained_epochs_state,
         disable_buttons=[create_model_button, create_optimizer_button, train_button, evaluate_button,
@@ -1206,6 +1147,7 @@ def binary_classification_hybrid_tab_content():
                           prediction_dataframe, model_summary_textarea], similarity_controls=similarity_controls,
     )
     directory_resets[target_column_dropdown] = gr.update(choices=[], value=None)
+    bind_release_run(release_run_button, status_html, directory_resets, concurrency_id=concurrency_id)
     directory_refresh_inputs = [working_directory_path_state, dataset_name_textbox, graph_directory_textbox, molecular_fingerprint_directory_textbox, checkpoint_file_dropdown]
     directory_refresh_outputs = [working_directory_content_list_dataframe,
                                  dataset_file_feature_extraction_dropdown, graph_directory_dropdown, molecular_fingerprint_directory_dropdown, dataset_file_process_data_dropdown, checkpoint_file_dropdown, prediction_dataset_file_dropdown, prediction_graph_directory_dropdown, prediction_molecular_fingerprint_directory_dropdown]
@@ -1240,9 +1182,9 @@ def binary_classification_hybrid_tab_content():
     dimensionality_reduction_checkbox.change(on_dimensionality_reduction_change, dimensionality_reduction_checkbox, [variance_threshold_slider, pca_num_components_slider])
     bind_data_processing(
         process_data_button, capture_split_outputs(on_process_data, 3, similarity_controls),
-        [working_directory_path_state, dataset_file_process_data_dropdown, load_data_radio, graph_directory_dropdown, molecular_fingerprint_directory_dropdown, datatype_state, dimensionality_reduction_checkbox, variance_threshold_slider, pca_num_components_slider, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, data_split_seed_slider, split_method_radio],
+        [working_directory_path_state, dataset_file_process_data_dropdown, load_data_radio, graph_directory_dropdown, molecular_fingerprint_directory_dropdown, datatype_state, dimensionality_reduction_checkbox, variance_threshold_slider, pca_num_components_slider, test_size_slider, val_size_slider, batch_size_dropdown, shuffle_checkbox, data_split_seed_slider, split_method_radio, graph_cache_mb, loader_workers, pin_memory],
         [status_html, create_model_button, target_column_dropdown, dataset_state, train_dataloader_state, val_dataloader_state, test_dataloader_state, variance_threshold_state, pca_state, split_context_state, *similarity_controls.reset_outputs],
-        clear_states=[model_state, optimizer_state, schedular_state, evaluation_df_state,
+        clear_states=[model_state, optimizer_state, schedular_state, evaluation_df_state, prediction_df_state,
                       prediction_dataset_state, prediction_dataloader_state],
         loss_states=[train_losses_state, val_losses_state], epoch_state=trained_epochs_state, concurrency_id=concurrency_id,
         disable_buttons=[create_optimizer_button, train_button, evaluate_button,
@@ -1255,11 +1197,11 @@ def binary_classification_hybrid_tab_content():
     # Create model interactions
     result_reset = dict(
         concurrency_id=concurrency_id,
-        clear_states=[evaluation_df_state],
+        clear_states=[evaluation_df_state, prediction_df_state],
         disable_buttons=[export_evaluation_button, export_metrics_button, export_prediction_button],
         clear_components=[evaluation_metrics_dataframe, confusion_matrix_plot, roc_auc_curve_plot, prediction_dataframe],
     )
-    bind_result_invalidation(create_model_button, show_model_run(on_create_model, 8), [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, model_random_seed_slider, variance_threshold_state, pca_state,
+    bind_result_invalidation(create_model_button, reset_created_optimizer(show_model_run(on_create_model, 8)), [dataset_state, gnn_model_tab_state, device_dropdown, datatype_state, model_random_seed_slider, variance_threshold_state, pca_state,
                                                 gcn_n_hiddens, gcn_num_layers, gcn_dropout, gcn_n_outputs,
                                                 graph_sage_n_hiddens, graph_sage_num_layers, graph_sage_dropout, graph_sage_n_outputs,
                                                 gin_n_hiddens, gin_num_layers, gin_dropout, gin_n_outputs,
@@ -1269,7 +1211,7 @@ def binary_classification_hybrid_tab_content():
                                                 customgcn_convolutional_layer_name, customgcn_n_hiddens, customgcn_n_layers, customgcn_n_heads, customgcn_n_outputs,
                                                 mlp_n_hiddens, mlp_n_layers, mlp_n_outputs,
                                                 predictor_n_hiddens, predictor_n_layers, model_name_textbox],
-                                                [status_html, model_summary_textarea, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state, run_directory_textbox], **result_reset)
+                                                [status_html, model_summary_textarea, save_checkpoint_button, load_checkpoint_button, create_optimizer_button, evaluate_button, process_prediction_data_button, train_button, model_state, train_losses_state, val_losses_state, trained_epochs_state, run_directory_textbox, optimizer_state, schedular_state, training_plot, export_losses_button], **result_reset)
     bind_checkpoint_save(save_checkpoint_button, on_save_checkpoint, [working_directory_path_state, checkpoint_name_textbox, model_state, trained_epochs_state, variance_threshold_state, pca_state], [status_html, working_directory_content_list_state], checkpoint_file_dropdown, concurrency_id=concurrency_id)
     bind_result_invalidation(load_checkpoint_button, reset_checkpoint_optimizer(show_model_run(on_load_checkpoint, 1, restore_controls=True)), [working_directory_path_state, checkpoint_file_dropdown, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state, optimizer_state, schedular_state],
                                  [status_html, model_state, train_losses_state, val_losses_state, trained_epochs_state, variance_threshold_state, pca_state, run_directory_textbox, model_name_textbox, model_random_seed_slider, optimizer_state, schedular_state, train_button, training_plot, export_losses_button], **result_reset)
@@ -1292,10 +1234,10 @@ def binary_classification_hybrid_tab_content():
     export_metrics_button.click(route_model_export(on_export_metrics), [working_directory_path_state, metrics_file_name_textbox, evaluation_df_state, dataset_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
         
     # Make prediction interactions
-    process_prediction_data_button.click(on_process_prediction_data, [working_directory_path_state, prediction_dataset_file_dropdown, dataset_state, prediction_graph_directory_dropdown, prediction_molecular_fingerprint_directory_dropdown, datatype_state, batch_size_dropdown], [status_html, prediction_dataset_state, prediction_dataloader_state, predict_button], concurrency_id=concurrency_id)
-    predict_button.click(on_predict, [model_state, dataset_state, prediction_dataset_state, prediction_dataloader_state, device_dropdown, datatype_state,
+    bind_result_invalidation(process_prediction_data_button, on_process_prediction_data, [working_directory_path_state, prediction_dataset_file_dropdown, dataset_state, prediction_graph_directory_dropdown, prediction_molecular_fingerprint_directory_dropdown, datatype_state, batch_size_dropdown, graph_cache_mb, loader_workers, pin_memory], [status_html, prediction_dataset_state, prediction_dataloader_state, predict_button], clear_states=[prediction_df_state], disable_buttons=[export_prediction_button], clear_components=[prediction_dataframe], concurrency_id=concurrency_id)
+    predict_button.click(cache_prediction_rows(on_predict), [model_state, dataset_state, prediction_dataset_state, prediction_dataloader_state, device_dropdown, datatype_state,
                                       gnn_model_tab_state, customgcn_convolutional_layer_name, variance_threshold_state, pca_state],
-                                      [status_html, prediction_dataframe, export_prediction_button], concurrency_id=concurrency_id)
-    export_prediction_button.click(route_model_export(on_export_prediction), [working_directory_path_state, prediction_file_name_textbox, prediction_dataframe, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
+                                      [status_html, prediction_dataframe, export_prediction_button, prediction_df_state], concurrency_id=concurrency_id)
+    export_prediction_button.click(route_model_export(on_export_prediction), [working_directory_path_state, prediction_file_name_textbox, prediction_df_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
     
     return binary_classification_tab

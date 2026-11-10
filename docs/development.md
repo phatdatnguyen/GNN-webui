@@ -63,3 +63,10 @@ The MTX CUDA investigation also reproduced a training crash with this workaround
 enabled, and reproduced a Python-only crash without the app or GPU libraries.
 See [the investigation and standalone Python 3.11 check](../diagnostics/segfault-investigation.md)
 before treating an allocator or architecture change as a fix.
+
+## Performance diagnostics
+
+See [GNN performance and memory](performance.md) for cache settings, resource
+ownership, and the read-only `diagnostics/benchmark_gnn.py` command. It compares
+first/repeated loader passes, representative training epochs, loader workers,
+RAM/CUDA memory, and repeated resource-release cycles without changing input data.

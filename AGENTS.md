@@ -154,6 +154,8 @@ Two pieces of state are bound to a specific model object and go stale if it is r
   perfectly flat while the status still reports success. `on_create_model` therefore
   returns `interactive=False` for `train_button`, forcing a fresh optimizer, and
   `utils.ensure_optimizer_matches_model` re-checks at the top of `on_train`.
+  The UI also clears both optimizer and scheduler on every model creation attempt;
+  the scheduler itself keeps the old optimizer and its tensors alive otherwise.
 - **The device is applied once, at creation**, but the Device dropdown is read on every
   run. `utils.ensure_model_on_device` turns the resulting tensor-device mismatch into a
   readable error instead of a raw `RuntimeError`.
@@ -161,6 +163,16 @@ Two pieces of state are bound to a specific model object and go stale if it is r
 `on_train` appends the train and validation loss together and bumps `trained_epochs` only
 after a full epoch, so a failure part-way through leaves the loss lists and the counter in
 agreement. It catches its own exceptions and still returns a plot of the completed epochs.
+
+All four GNN tabs expose **Release current run**, which clears processed data/loaders,
+models, transformers, histories, similarity and results under the tab's concurrency
+lock while preserving its working directory and saved files. Prediction results live
+in a separate `gr.State`; the displayed table is a 200-row preview and CSV export uses
+the full state. Include this state in every relevant invalidation path.
+`session_lifecycle.register_session_cleanup` binds Gradio's unload event on the root
+Blocks, including when mounted on FastAPI. Its guarded adapter detaches the complete
+session (including rendered payloads); active callbacks keep their own references until
+they finish. It must not mutate in-flight tensors or another session's resources.
 
 ### On-disk layout and the row-alignment invariant
 
@@ -238,6 +250,28 @@ The graph check reads `smiles.txt` so the whole ordering is verified from one sm
 directories extracted before the manifest existed fall back to spot-checking the first,
 middle and last graph. `__len__` counts only files named `<int>.pt` and caches the result,
 because a `DataLoader` calls it every epoch.
+
+`datasets.py` prepares contiguous fingerprints and targets once. Validated binary
+fingerprints use uint8 storage; legacy nonbinary data retain integer conversion
+semantics. The processed numerical data are snapshots: reprocess after changing their
+source. Train/validation/test Subsets share a bounded CPU graph cache (128 MiB by
+default, 0 disables it). Cached graphs are copied before returning samples, and the
+budget accounts for tensor storage and Python objects, not total application RAM.
+Spawned workers do not receive or maintain copies of this graph cache.
+
+`prepare_dataset` prepares PCA/variance-filtered fingerprints and scaled targets in
+chunks after fitting on training rows only. It hashes actual fitted transformer state
+and dtype to rebuild views when checkpoints change preprocessing. `.fp` and `.y`
+retain their original meaning; `.fp_prepared` and `.y_prepared` are optional transformed
+views. Preserve raw regression precision before scaling. The model-summary path leaves
+target preparation intact. Generic PyG datasets retain batch-time transform fallbacks.
+
+`gnn_runtime.make_loader` centralizes seeded loaders, optional pinned memory and
+0/2/4 workers. Defaults remain 0 workers and unpinned memory. Multiprocessing uses
+spawn, bounded prefetch and nonpersistent workers; validate shutdown on error as well
+as completion. Training accumulates detached weighted loss on-device and reads it once
+per epoch, while retaining the finite-loss check before backward. Do not introduce
+per-batch garbage collection or CUDA cache clearing.
 
 The training loader shuffles each epoch, seeded from the data split random seed so runs stay
 reproducible; the "Shuffle training data each epoch" checkbox turns it off for a fixed
@@ -340,6 +374,8 @@ Tests needing 3D conformers are marked `@pytest.mark.slow`.
 classical graph extraction through Gradio, including refresh and source invalidation.
 User-facing details are in `docs/user-guide.md`; test commands and runtime diagnostics
 are in `docs/development.md`. Keep the README below startup focused on the basic workflow.
+`docs/performance.md` describes cache/resource controls and the read-only
+`diagnostics/benchmark_gnn.py` benchmark, including repeated release checks.
 
 `tests/test_models.py` is deliberately combinatorial: all 21 custom layers × `n_layers`
 ∈ {1, 2, 3, 6}, because a wrong output width only surfaces at forward time. Several tests

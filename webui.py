@@ -8,6 +8,7 @@ from regression_classical import regression_classical_tab_content
 from pathlib import Path
 from fastapi import FastAPI
 from utils import BASE_DIR, DATA_DIR
+from session_lifecycle import register_session_cleanup
 import uvicorn
 import socket
 import os
@@ -39,6 +40,7 @@ with gr.Blocks() as blocks:
         regression_hybrid_tab_content()
         regression_3d_tab_content()
         regression_classical_tab_content()
+    register_session_cleanup(blocks)
 
 # mount Gradio app to FastAPI app
 app = gr.mount_gradio_app(app, blocks, css_paths=Path(BASE_DIR) / 'styles.css', path="/")
