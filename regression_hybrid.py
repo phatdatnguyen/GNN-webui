@@ -15,7 +15,9 @@ from feature_provenance import capture_prediction_features, ensure_prediction_fe
 from evaluation_metrics import metrics_from_predictions
 from matplotlib import pyplot as plt
 from datasets import MolecularDataset
-from ui_utils import bind_data_processing, bind_result_invalidation, dataset_cleanup_controls
+from ui_utils import bind_data_processing, bind_result_invalidation
+from update_dataset import build_dataset_upload_controls, upload_dataset
+import feature_extraction
 from gnn_run_ui import attach_model_run, capture_split_outputs, route_model_export, bind_working_directory, load_run_checkpoint, ensure_model_split, directory_reset_updates, show_model_run, capture_feature_sources, bind_artifact_update, bind_checkpoint_save, reset_checkpoint_optimizer, loss_epoch_numbers
 from run_utils import make_split_context, ensure_run_directory, list_saved_models, resolve_saved_model, validate_seed
 from similarity_ui import build_similarity_controls, bind_similarity_controls
@@ -164,26 +166,17 @@ def on_datatype_change(datatype):
 
 def on_upload_dataset(dataset_file_path, working_directory_path, dataset_name, smiles_column, target_columns,
                       canonicalize_smiles=True, remove_duplicates=True, remove_salt=True):
-    try:
-        if not working_directory_path or not os.path.isdir(working_directory_path):
-            raise ValueError("Please open a working directory first.")
-        if dataset_file_path is None or not str(dataset_file_path).strip():
-            raise ValueError("Please select a dataset file.")
-        status, df = process_dataset_file(
-            dataset_file_path, working_directory_path, dataset_name, smiles_column, target_columns,
-            canonicalize_smiles=canonicalize_smiles, remove_duplicates=remove_duplicates, remove_salt=remove_salt)
-        if df is None:
-            return status, gr.update(), gr.update()
-        return status, df.head(10), get_working_directory_contents(working_directory_path)
-    except Exception as exc:
-        return f"<span style='color: red;'>Error uploading dataset: {escape(str(exc))}</span>", gr.update(), gr.update()
+    return upload_dataset(
+        dataset_file_path, working_directory_path, dataset_name, smiles_column, target_columns,
+        canonicalize_smiles, remove_duplicates, remove_salt)
 
 def on_extract_graphs(working_directory_path, dataset_file_name, graph_directory, graph_featurizer_name, datatype, progress=gr.Progress()):
-    status = extract_graphs(working_directory_path, dataset_file_name, graph_directory, graph_featurizer_name, datatype, progress)
-    return status, get_working_directory_contents(working_directory_path)
+    return feature_extraction.on_extract_graphs(
+        working_directory_path, dataset_file_name, graph_directory, graph_featurizer_name,
+        datatype, progress)
 
 def on_molecular_fingerprint_change(molecular_fingerpint_name):
-    return gr.update(visible=(molecular_fingerpint_name == 'Morgan fingerprint'))
+    return feature_extraction.fingerprint_radius_update(molecular_fingerpint_name)
 
 def on_load_data_option_change(load_data_option, dimensionality_reduction_enabled):
     load_graphs = (load_data_option == 'Graphs' or load_data_option == 'Both')
@@ -193,8 +186,9 @@ def on_load_data_option_change(load_data_option, dimensionality_reduction_enable
     return gr.update(visible=load_graphs), gr.update(visible=load_fingerprints), gr.update(visible=load_fingerprints), gr.update(visible=show_reduction), gr.update(visible=show_reduction), gr.update(visible=load_graphs), gr.update(visible=load_fingerprints), gr.update(visible=load_graphs), gr.update(visible=load_fingerprints)
 
 def on_extract_molecule_fingerprints(working_directory_path, dataset_file_name, molecular_fingerprint_directory, molecular_fingerprint_name, radius, number_of_bits, progress=gr.Progress()):
-    status = extract_molecule_fingerprints(working_directory_path, dataset_file_name, molecular_fingerprint_directory, molecular_fingerprint_name, radius, number_of_bits, progress)
-    return status, get_working_directory_contents(working_directory_path)
+    return feature_extraction.on_extract_fingerprints(
+        working_directory_path, dataset_file_name, molecular_fingerprint_directory,
+        molecular_fingerprint_name, radius, number_of_bits, progress)
 
 def on_dimensionality_reduction_change(dimensionality_reduction_enabled):
     return gr.update(visible=dimensionality_reduction_enabled), gr.update(visible=dimensionality_reduction_enabled)
@@ -1010,33 +1004,26 @@ def regression_hybrid_tab_content():
                         device_dropdown = get_device_dropdown()
                         datatype_dropdown = gr.Dropdown(label="Data type", value="float32", choices=["float16", "float32", "float64", "bfloat16"])
                         datatype_state = gr.State(value=torch.float32)
-                with gr.Accordion("Upload Dataset"):
-                    with gr.Row(equal_height=True):
-                        with gr.Column(scale=1):
-                            dataset_file = gr.File(file_types=['.csv'], type='filepath', label="Dataset file")
-                            dataset_name_textbox = gr.Textbox(label="Dataset name", value="dataset")
-                            smiles_column_textbox = gr.Textbox(label="SMILES column", value="SMILES")
-                            target_columns_textbox = gr.Textbox(label="Target columns (separated by commas)", value="target")
-                            canonicalize_smiles_checkbox, remove_duplicates_checkbox, remove_salt_checkbox = dataset_cleanup_controls()
-                            upload_dataset_button = gr.Button(value="Load dataset", interactive=False)
-                        with gr.Column(scale=2):
-                            dataset_preview_dataframe = gr.Dataframe(label="Dataset preview", max_height=360, interactive=False)
-                with gr.Accordion("Feature Extraction"):
-                    with gr.Row():
-                        dataset_file_feature_extraction_dropdown = gr.Dropdown(label="Dataset file", choices=[], allow_custom_value=False)
-                    with gr.Row():
-                        with gr.Column(scale=1):
-                            gr.Markdown(value="**Graph extraction**")
-                            graph_directory_textbox = gr.Textbox(label="Graph directory", value="GRAPH_graphs", info="GRAPH_ is added automatically when omitted.")
-                            graph_featurizer_dropdown = gr.Dropdown(label="Graph featurizer", value="MolGraphConvFeaturizer", choices=["MolGraphConvFeaturizer", "PagtnMolGraphFeaturizer", "DMPNNFeaturizer"])
-                            extract_graphs_button = gr.Button(value="Extract graphs", interactive=False)
-                        with gr.Column(scale=1):
-                            gr.Markdown(value="**Molecular fingerprint extraction**")
-                            molecular_fingerprint_directory_textbox = gr.Textbox(label="Molecular fingerprint directory", value="FP_fingerprints", info="FP_ is added automatically when omitted.")
-                            molecular_fingerprint_dropdown = gr.Dropdown(label="Molecular fingerprint", value="Morgan fingerprint", choices=["Morgan fingerprint", "Atom-pair fingerprint", "Topological-torsion fingerprint", "Avalon fingerprint", "Layered fingerprint", "Pattern fingerprint", "RDKit fingerprint"])
-                            radius_slider = gr.Slider(label="Radius", value=2, minimum=1, maximum=5, step=1)
-                            number_of_bits_slider = gr.Slider(label="Number of bits", value=2048, minimum=128, maximum=4096, step=128)
-                            extract_molecule_fingerprints_button = gr.Button(value="Extract molecular fingerprints", interactive=False)
+                upload_controls = build_dataset_upload_controls(is_3d=False)
+                dataset_file = upload_controls.file
+                dataset_name_textbox = upload_controls.name
+                smiles_column_textbox = upload_controls.smiles
+                target_columns_textbox = upload_controls.targets
+                canonicalize_smiles_checkbox = upload_controls.canonicalize_smiles
+                remove_duplicates_checkbox = upload_controls.remove_duplicates
+                remove_salt_checkbox = upload_controls.remove_salt
+                upload_dataset_button = upload_controls.button
+                dataset_preview_dataframe = upload_controls.preview
+                extraction_controls = feature_extraction.build_feature_extraction_controls(is_3d=False)
+                dataset_file_feature_extraction_dropdown = extraction_controls.dataset
+                graph_directory_textbox = extraction_controls.graph_directory
+                extract_graphs_button = extraction_controls.graph_button
+                graph_featurizer_dropdown = extraction_controls.graph_featurizer
+                molecular_fingerprint_directory_textbox = extraction_controls.fingerprint_directory
+                molecular_fingerprint_dropdown = extraction_controls.fingerprint_method
+                radius_slider = extraction_controls.radius
+                number_of_bits_slider = extraction_controls.bits
+                extract_molecule_fingerprints_button = extraction_controls.fingerprint_button
                 with gr.Accordion("Load and process data"):
                     with gr.Row():
                         dataset_file_process_data_dropdown = gr.Dropdown(label="Dataset file", choices=[], allow_custom_value=False)

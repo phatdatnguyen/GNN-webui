@@ -249,7 +249,11 @@ def test_classical_controls_only_show_selected_model_parameters(module, tmp_path
         updates = change.fn(model_name, None)
         assert [updates[group]["visible"] for group in groups] == [i == index for i in range(len(groups))]
     labels = {getattr(component, "label", None) for component in blocks.blocks.values()}
-    assert not labels.intersection({"Device", "Epochs", "Graph directory", "Validation size", "Validation metrics"})
+    assert not labels.intersection({"Device", "Epochs", "Validation size", "Validation metrics"})
+    graph_controls = [component for component in blocks.blocks.values()
+                      if getattr(component, "label", None) == "Graph directory"]
+    assert len(graph_controls) == 1
+    assert ancestor(graph_controls[0], gr.Accordion).label == "Feature Extraction"
     # Some estimators expose their own optimizer; there is no separate GNN training setup.
     buttons = {component.value for component in blocks.blocks.values() if isinstance(component, gr.Button)}
     assert not buttons.intersection({"Create optimizer", "Create scheduler", "Train model"})
@@ -259,7 +263,7 @@ def test_classical_controls_only_show_selected_model_parameters(module, tmp_path
     assert all(note in visible_help for note in notes.values() if note)
     assert len({callback(blocks, name).concurrency_id for name in (
         "on_process_data", "on_fit", "on_load_model", "on_upload_dataset",
-        "on_extract_fingerprints", "on_predict", "on_evaluate")}) == 1
+        "on_extract_graphs", "on_extract_fingerprints", "on_predict", "on_evaluate")}) == 1
     process, fit = callback(blocks, "on_process_data"), callback(blocks, "on_fit")
     split_seed, model_seed, run_name = process.inputs[4], fit.inputs[2], fit.inputs[4]
     assert split_seed.label == "Data split random seed"

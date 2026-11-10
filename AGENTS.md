@@ -44,6 +44,17 @@ A change to a handler almost always needs mirroring in the other three. The pair
 the loss function, the metrics block, whether an `output_scaler` is threaded through, and
 2D (graph + fingerprint branches) versus 3D (SchNet/DimeNet++/ViSNet, positions only).
 
+Dataset upload and feature extraction are exceptions: their controls and common
+handlers live in `update_dataset.py` and `feature_extraction.py`. All six tabs use
+`build_dataset_upload_controls`; 3D tabs pass `is_3d=True` and retain their single-target
+restriction. `build_feature_extraction_controls` builds 2D graph/fingerprint controls
+for hybrid and classical tabs, or the conformer/force-field controls for 3D tabs.
+The returned dataclasses contain the components needed for workflow event wiring.
+Keep widget defaults, import validation, extraction error handling, and fingerprint
+radius visibility in these shared modules. Thin workflow adapters retain the existing
+callback signatures and positional return contracts. The chemistry and atomic file
+publication routines remain centralized in `utils.py`.
+
 Shared code lives in `utils.py`, which each GNN tab pulls in with `from utils import *` —
 that is how `DATA_DIR`, `sanitize_path_component` and `list_graph_files` become available
 as module globals in each tab (relevant when monkeypatching in tests).
@@ -59,6 +70,12 @@ data and split assignments. Evaluation rejects a model from a different split;
 prediction accepts compatible new data.
 
 Classical workflows split into training and test sets only (20% test by default).
+Their shared feature panel also offers 2D graph extraction (float32), while model
+fitting and prediction continue to consume fingerprints only. Extracting graphs from
+the active training CSV invalidates its processed data/model/results/similarity,
+because extraction can remove CSV rows. Unrelated prediction extraction preserves
+the training run. Matching extraction failures also invalidate state conservatively
+in case publication changed source files.
 Their evaluation caches per-row actual values and predictions for output selection
 and plots. All evaluation plots share the right column of **Model evaluation**;
 all six tabs use **Make predictions** for prediction controls and results.
@@ -150,7 +167,8 @@ agreement. It catches its own exceptions and still returns a plot of the complet
 `utils.process_dataset_file` handles dataset import for all six tabs. Its optional
 `canonicalize_smiles`, `remove_duplicates`, and `remove_salt` arguments default to
 `True`; the existing sixth positional `is_3d_dataset` argument is retained. The
-checkboxes come from `ui_utils.dataset_cleanup_controls` in one row above **Load dataset**.
+checkboxes come from `update_dataset.dataset_cleanup_controls` in one row above
+**Load dataset** (`ui_utils` retains a compatibility import).
 Salt removal precedes deduplication; canonical isomeric molecule identity determines
 duplicates even when canonical output is disabled. Keep the first row and its target
 values. Status counts partition the source rows into imported and removed molecules;
@@ -317,6 +335,11 @@ and `create_model_3d_args()`, which build the 40-odd positional argument lists t
 `on_create_model` takes — use these rather than hand-writing positional calls.
 
 Tests needing 3D conformers are marked `@pytest.mark.slow`.
+
+`tests/test_shared_data_sections.py` exercises the common preparation controls and
+classical graph extraction through Gradio, including refresh and source invalidation.
+User-facing details are in `docs/user-guide.md`; test commands and runtime diagnostics
+are in `docs/development.md`. Keep the README below startup focused on the basic workflow.
 
 `tests/test_models.py` is deliberately combinatorial: all 21 custom layers × `n_layers`
 ∈ {1, 2, 3, 6}, because a wrong output width only surfaces at forward time. Several tests

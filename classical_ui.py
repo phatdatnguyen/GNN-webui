@@ -7,11 +7,13 @@ import time
 
 import gradio as gr
 import pandas as pd
+import torch
 
 import classical_ml as ml
 from classical_plots import make_evaluation_plots
 from similarity_ui import build_similarity_controls, bind_similarity_controls
-from ui_utils import dataset_cleanup_controls
+from update_dataset import build_dataset_upload_controls, upload_dataset
+import feature_extraction
 import run_utils
 import utils
 
@@ -23,12 +25,6 @@ def status(message, success=False):
 
 def succeeded(message):
     return "color: green" in message
-
-
-def utility_status(message):
-    """Escape the contents of the shared extractor's HTML status envelope."""
-    inner = message.split(">", 1)[1].rsplit("</span>", 1)[0] if message.startswith("<span") else message
-    return status(inner, succeeded(message))
 
 
 def model_summary(model):
@@ -64,27 +60,22 @@ class ClassicalWorkflow:
 
     def on_upload_dataset(self, file_path, workdir, name, smiles_column, targets,
                           canonicalize_smiles=True, remove_duplicates=True, remove_salt=True):
-        try:
-            if not workdir or not os.path.isdir(workdir):
-                raise ValueError("Please open a working directory first.")
-            if not file_path:
-                raise ValueError("Please select a dataset CSV file.")
-            result, frame = utils.process_dataset_file(
-                file_path, workdir, name, smiles_column, targets or "",
-                canonicalize_smiles=canonicalize_smiles, remove_duplicates=remove_duplicates, remove_salt=remove_salt)
-            return result, frame.head(10) if frame is not None else gr.update()
-        except Exception as exc:
-            return status(f"Error uploading dataset: {exc}"), gr.update()
+        message, preview, _ = upload_dataset(
+            file_path, workdir, name, smiles_column, targets,
+            canonicalize_smiles, remove_duplicates, remove_salt)
+        return message, preview
+
+    def on_extract_graphs(self, workdir, dataset_name, graph_dir, featurizer,
+                         datatype, progress=gr.Progress()):
+        message, _ = feature_extraction.on_extract_graphs(
+            workdir, dataset_name, graph_dir, featurizer, datatype, progress)
+        return message
 
     def on_extract_fingerprints(self, workdir, dataset_name, fp_dir, fingerprint_name,
                                 radius, number_of_bits, progress=gr.Progress()):
-        try:
-            if not workdir:
-                raise ValueError("Please open a working directory first.")
-            return utility_status(utils.extract_molecule_fingerprints(
-                workdir, dataset_name, fp_dir, fingerprint_name, radius, number_of_bits, progress))
-        except Exception as exc:
-            return status(f"Error extracting molecular fingerprints: {exc}")
+        message, _ = feature_extraction.on_extract_fingerprints(
+            workdir, dataset_name, fp_dir, fingerprint_name, radius, number_of_bits, progress)
+        return message
 
     def on_process_data(self, workdir, dataset_name, fp_dir, test_ratio=0.2,
                         random_seed=0, split_method="Random"):
@@ -241,28 +232,23 @@ def build_classical_tab(workflow, title):
                 contents = gr.Dataframe(label="Contents in Working Directory", headers=["Name", "Type", "Modified"], interactive=False)
             with gr.Column(scale=3):
                 status_html = gr.HTML()
-                with gr.Accordion("Upload dataset"):
-                    file_input = gr.File(label="Dataset CSV", file_types=[".csv"], type="filepath")
-                    with gr.Row():
-                        dataset_name = gr.Textbox(label="Dataset name", value="dataset",
-                                                  info="Use a new name when uploading prediction data.")
-                        smiles_column = gr.Textbox(label="SMILES column", value="SMILES")
-                        targets = gr.Textbox(label="Target columns (separated by commas)", value="target",
-                                             info="Leave blank when uploading an unlabeled prediction dataset.")
-                    canonicalize_smiles_checkbox, remove_duplicates_checkbox, remove_salt_checkbox = dataset_cleanup_controls()
-                    upload_button = gr.Button("Load dataset", interactive=False)
-                    preview = gr.Dataframe(label="Dataset preview", interactive=False)
-                with gr.Accordion("Molecular fingerprint extraction"):
-                    extraction_dataset = gr.Dropdown(label="Dataset file", choices=[])
-                    with gr.Row():
-                        fingerprint_method = gr.Dropdown(label="Molecular fingerprint", choices=utils.FINGERPRINT_NAMES,
-                                                         value="Morgan fingerprint")
-                        fingerprint_name = gr.Textbox(label="Fingerprint directory", value="FP_fingerprints",
-                                                      info="FP_ is added automatically when omitted. Use a separate folder for each dataset.")
-                    with gr.Row():
-                        radius = gr.Slider(label="Radius", minimum=1, maximum=5, value=2, step=1)
-                        bits = gr.Slider(label="Number of bits", minimum=128, maximum=4096, value=2048, step=128)
-                    extract_button = gr.Button("Extract molecular fingerprints", interactive=False)
+                upload_controls = build_dataset_upload_controls()
+                file_input, dataset_name = upload_controls.file, upload_controls.name
+                smiles_column, targets = upload_controls.smiles, upload_controls.targets
+                canonicalize_smiles_checkbox = upload_controls.canonicalize_smiles
+                remove_duplicates_checkbox = upload_controls.remove_duplicates
+                remove_salt_checkbox = upload_controls.remove_salt
+                upload_button, preview = upload_controls.button, upload_controls.preview
+                extraction_controls = feature_extraction.build_feature_extraction_controls()
+                extraction_dataset = extraction_controls.dataset
+                graph_name = extraction_controls.graph_directory
+                graph_featurizer = extraction_controls.graph_featurizer
+                extract_graphs_button = extraction_controls.graph_button
+                graph_datatype_state = gr.State(torch.float32)
+                fingerprint_method = extraction_controls.fingerprint_method
+                fingerprint_name = extraction_controls.fingerprint_directory
+                radius, bits = extraction_controls.radius, extraction_controls.bits
+                extract_button = extraction_controls.fingerprint_button
                 with gr.Accordion("Load and process data"):
                     with gr.Row():
                         training_dataset = gr.Dropdown(label="Training dataset file", choices=[])
@@ -407,11 +393,11 @@ def build_classical_tab(workflow, title):
                                     if path else gr.update(value=None)),
                         preview: gr.update(value=None)})
         updates.update({button: gr.update(interactive=path is not None and status_html not in refreshed)
-                        for button in (upload_button, extract_button, process_button, load_button)})
+                        for button in (upload_button, extract_graphs_button, extract_button, process_button, load_button)})
         return updates
 
     open_outputs = [*reset_outputs, *refresh_outputs, path_state, directory, preview,
-                    upload_button, extract_button, process_button, load_button]
+                    upload_button, extract_graphs_button, extract_button, process_button, load_button]
     # Components may serve more than one role; each output must be listed once.
     open_outputs = list(dict.fromkeys(open_outputs))
     open_button.click(on_open_working_directory, directory, open_outputs, concurrency_id=concurrency_id)
@@ -434,23 +420,38 @@ def build_classical_tab(workflow, title):
                         [status_html, preview, *reset_outputs], concurrency_id=concurrency_id).then(
         refresh_directory, [path_state, *selection_components], refresh_outputs, concurrency_id=concurrency_id)
 
+    def extraction_updates(message, path, dataset, training_source, fingerprint_directory=None):
+        updates = {status_html: message}
+        # Graph extraction can remove rows from the CSV even though classical models
+        # consume only fingerprints. Failed publication can also change source files.
+        if (training_source and training_source[0] == path
+                and (training_source[1] == dataset or training_source[2] == fingerprint_directory)):
+            updates.update(reset())
+        return updates
+
+    def on_extract_graphs(path, dataset, graph_name, featurizer, datatype, training_source, progress=gr.Progress()):
+        message = workflow.on_extract_graphs(path, dataset, graph_name, featurizer, datatype, progress)
+        return extraction_updates(message, path, dataset, training_source)
+
+    extract_graphs_button.click(on_extract_graphs,
+                               [path_state, extraction_dataset, graph_name, graph_featurizer,
+                                graph_datatype_state, training_source_state],
+                               [status_html, *reset_outputs], concurrency_id=concurrency_id).then(
+        refresh_directory, [path_state, *selection_components], refresh_outputs, concurrency_id=concurrency_id)
+
     def on_extract_fingerprints(path, dataset, fp_name, method, radius_value, bits_value, training_source, progress=gr.Progress()):
         message = workflow.on_extract_fingerprints(path, dataset, fp_name, method, radius_value, bits_value, progress)
-        updates = {status_html: message}
         try:
             destination = utils.prefixed_feature_directory(fp_name, "fingerprint")
         except ValueError:
             destination = None
-        if (succeeded(message) and training_source and training_source[0] == path
-                and (training_source[1] == dataset or training_source[2] == destination)):
-            updates.update(reset())
-        return updates
+        return extraction_updates(message, path, dataset, training_source, destination)
 
     extract_button.click(on_extract_fingerprints,
                          [path_state, extraction_dataset, fingerprint_name, fingerprint_method, radius, bits, training_source_state],
                          [status_html, *reset_outputs], concurrency_id=concurrency_id).then(
         refresh_directory, [path_state, *selection_components], refresh_outputs, concurrency_id=concurrency_id)
-    fingerprint_method.change(lambda name: gr.update(visible=name == "Morgan fingerprint"), fingerprint_method, radius)
+    fingerprint_method.change(feature_extraction.fingerprint_radius_update, fingerprint_method, radius)
 
     def on_process_data(path, dataset, fps, test_size, random_seed, split_method="Random"):
         message, processed = workflow.on_process_data(path, dataset, fps, test_size, random_seed, split_method)

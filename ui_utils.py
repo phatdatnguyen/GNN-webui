@@ -4,20 +4,8 @@ from functools import wraps
 
 import gradio as gr
 
-
-def dataset_cleanup_controls():
-    """Consistent dataset import options for each workflow."""
-    with gr.Row():
-        canonicalize_smiles = gr.Checkbox(
-            label="Canonicalize SMILES", value=True, min_width=0,
-            info="Standardize SMILES while preserving stereochemistry.")
-        remove_duplicates = gr.Checkbox(
-            label="Remove duplicates", value=True, min_width=0,
-            info="Keep the first row for each molecule, including its target values.")
-        remove_salt = gr.Checkbox(
-            label="Remove salt", value=True, min_width=0,
-            info="Strip recognized salt fragments from the imported SMILES.")
-    return canonicalize_smiles, remove_duplicates, remove_salt
+# Retain the original import path for callers while the upload UI has one owner.
+from update_dataset import dataset_cleanup_controls
 
 
 def bind_result_invalidation(button, callback, inputs, outputs, *, clear_states,
