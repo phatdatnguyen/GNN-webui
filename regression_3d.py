@@ -13,7 +13,8 @@ from matplotlib import pyplot as plt
 from datasets import MolecularDataset3D, prepare_dataset
 from gnn_runtime import (make_loader, cache_budget_bytes, hybrid_graph_inputs,
                          batch_fingerprints, batch_targets, safe_model_summary)
-from training_utils import create_optimizer, validation_loss
+from training_utils import create_optimizer, validation_loss, training_handler, build_training_update
+from training_control import TrainingControl, TrainingStopped, bind_training
 from ui_utils import bind_data_processing, bind_result_invalidation
 from update_dataset import build_dataset_upload_controls, upload_dataset
 import feature_extraction
@@ -437,8 +438,10 @@ def validation(model, dataloader, device, datatype, output_scaler):
 
     return validation_loss(total_loss, num_samples, regression=True)
 
+@training_handler
 def on_train(model, train_dataloader, val_dataloader, device, datatype, output_scaler, optimizer, scheduler, epochs, trained_epochs, train_losses, val_losses, progress=gr.Progress()):
     loss_epochs = None
+    epoch_in_progress = False
     try:
         loss_epochs = list(loss_epoch_numbers(train_losses, val_losses, trained_epochs))
         ensure_optimizer_matches_model(model, optimizer)
@@ -449,34 +452,45 @@ def on_train(model, train_dataloader, val_dataloader, device, datatype, output_s
         if output_scaler is None:
             raise ValueError("No output scaler is available. Please process the data first.")
 
-        # Training loop. Both losses are appended together and the epoch counter is bumped
-        # only after a full epoch, so a failure part-way through leaves consistent state.
-        for _ in progress.tqdm(range(trained_epochs, epochs + trained_epochs), total=epochs, desc="Training"):
+        target_epochs = trained_epochs + epochs
+        status = f"<span style='color: green;'>Training started. Completed epochs: {trained_epochs}.</span>"
+        yield build_training_update(status, loss_epochs, trained_epochs, train_losses, val_losses,
+                                    'RMSE loss (scaled targets)', finished=False)
+
+        # Publish only complete train/validation pairs. Stopping between batches keeps
+        # the weights already updated, without recording an incomplete epoch as finished.
+        for _ in progress.tqdm(range(trained_epochs, target_epochs), total=epochs, desc="Training"):
+            getattr(train_dataloader, "check_stop", lambda: None)()
+            epoch_in_progress = True
             train_loss = train(model, train_dataloader, device, datatype, output_scaler, optimizer)
+            getattr(train_dataloader, "check_stop", lambda: None)()
             val_loss = validation(model, val_dataloader, device, datatype, output_scaler)
             train_losses.append(train_loss)
             val_losses.append(val_loss)
             trained_epochs += 1
             loss_epochs.append(trained_epochs)
             scheduler.step()
+            epoch_in_progress = False
+            finished = trained_epochs == target_epochs
+            status = (f"<span style='color: green;'>Training completed for {trained_epochs} epochs.</span>"
+                      if finished else
+                      f"<span style='color: green;'>Training: {trained_epochs} of {target_epochs} epochs completed.</span>")
+            yield build_training_update(status, loss_epochs, trained_epochs, train_losses, val_losses,
+                                        'RMSE loss (scaled targets)', finished=finished)
+            if finished:
+                return
 
         status = f"<span style='color: green;'>Training completed for {trained_epochs} epochs.</span>"
+    except TrainingStopped:
+        detail = (" Updates from the interrupted epoch are retained; its incomplete losses are omitted."
+                  if epoch_in_progress else "")
+        status = (f"<span style='color: orange;'>Training stopped. Completed epochs: {trained_epochs}."
+                  f" Current weights and optimizer are retained.{detail}</span>")
     except Exception as exc:
         status = f"<span style='color: red;'>Error during training: {exc}</span>"
 
-    # Plot whatever was completed, so a mid-run failure does not discard finished epochs.
-    figure = plt.figure(figsize=(10, 5))
-    plt.plot(loss_epochs or [], train_losses if loss_epochs is not None else [], label='Train loss')
-    plt.plot(loss_epochs or [], val_losses if loss_epochs is not None else [], label='Validation loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('RMSE loss (scaled targets)')
-    plt.legend()
-    plt.grid(True)
-    plt.close(figure)
-
-    export_losses_button = gr.Button(value="Export", interactive=bool(train_losses) and loss_epochs is not None)
-
-    return status, figure, export_losses_button, trained_epochs, train_losses, val_losses
+    yield build_training_update(status, loss_epochs, trained_epochs, train_losses, val_losses,
+                                'RMSE loss (scaled targets)', finished=True)
 
 def on_export_losses(working_directory_path, file_name, train_losses, val_losses, trained_epochs=None):
     try:
@@ -808,7 +822,10 @@ def regression_3d_tab_content():
                                 with gr.Column(scale=1):
                                     epochs_slider = gr.Slider(label="Epochs", minimum=1, maximum=1000, value=100, step=1)
                                 with gr.Column(scale=1):
-                                    train_button = gr.Button(value="Train", interactive=False)
+                                    with gr.Row():
+                                        train_button = gr.Button(value="Train", interactive=False)
+                                        stop_training_button = gr.Button(value="Stop training", interactive=False)
+                                    training_control_state = gr.State(TrainingControl())
                             with gr.Row(): 
                                 with gr.Column(scale=3):
                                     training_plot = gr.Plot()
@@ -919,9 +936,9 @@ def regression_3d_tab_content():
     
     # Train model interactions
     create_optimizer_button.click(on_create_optimizer, [model_state, optimizer_dropdown, learning_rate_slider, learning_rate_decay_slider, fused_optimizer_checkbox], [status_html, optimizer_state, schedular_state, train_button], concurrency_id=concurrency_id)
-    bind_result_invalidation(train_button, on_train, [model_state, train_dataloader_state, val_dataloader_state, device_dropdown, datatype_state, output_scaler_state,
+    bind_training(train_button, on_train, [model_state, train_dataloader_state, val_dataloader_state, device_dropdown, datatype_state, output_scaler_state,
                                   optimizer_state, schedular_state, epochs_slider, trained_epochs_state, train_losses_state, val_losses_state],
-                                 [status_html, training_plot, export_losses_button, trained_epochs_state, train_losses_state, val_losses_state], **result_reset)
+                                 [status_html, training_plot, export_losses_button, trained_epochs_state, train_losses_state, val_losses_state], stop_button=stop_training_button, control_state=training_control_state, **result_reset)
     export_losses_button.click(route_model_export(on_export_losses), [working_directory_path_state, loss_file_name_textbox, train_losses_state, val_losses_state, trained_epochs_state, model_state], [status_html, working_directory_content_list_state], concurrency_id=concurrency_id)
     
     # Evaluate model interactions

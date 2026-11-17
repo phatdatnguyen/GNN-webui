@@ -151,6 +151,13 @@ exports contain every prediction.
 and AdamW. It is off by default; enable it before creating the optimizer to compare
 performance on your hardware. Small rounding differences are possible.
 
+In all four GNN tabs, the loss graph updates after each completed training and
+validation epoch. Click **Stop training** to stop at the next batch boundary;
+the current batch must finish first. The model weights and optimizer are retained,
+so you can evaluate, save a checkpoint, or click **Train** to run more epochs.
+If stopped during an epoch, its weight updates are kept, but that incomplete epoch
+is excluded from the loss graph, loss exports, and completed-epoch count.
+
 ### Separate data and model seeds
 
 **Data split random seed** is in the split controls of **Load and process data**,

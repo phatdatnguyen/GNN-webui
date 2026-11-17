@@ -10,3 +10,5 @@ CLAUDE.md
 *.txt
 !requirements.txt
 !requirements-dev.txt
+
+start_webui.bat

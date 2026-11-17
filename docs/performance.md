@@ -70,6 +70,14 @@ are possible. Compare runs with the same data, batch size, seeds, and settings. 
 
 ## Releasing resources
 
+GNN training streams a loss plot after each completed epoch. **Stop training**
+signals the active run without waiting in its training queue. It takes effect
+between batches, including during validation; an active batch or data-loading
+operation must return first. Stopping releases the active loader iterators and
+their workers. It retains the model and optimizer, and only complete
+training/validation pairs advance the loss history and learning-rate scheduler.
+Partial-epoch weight updates remain in the model; continuing starts a new epoch.
+
 Creating a new model clears the previous optimizer and scheduler as well as its
 results. Both objects must be cleared: the scheduler refers to the optimizer, and
 the optimizer refers to old parameters, gradients, and optimizer tensors. Loading a

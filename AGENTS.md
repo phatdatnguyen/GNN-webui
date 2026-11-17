@@ -117,8 +117,9 @@ apart from `loss_fn`.
 
 `ui_utils.bind_data_processing` clears dependent GNN model, training, prediction, and
 evaluation state atomically when processing a split. `bind_result_invalidation`
-clears evaluation/prediction results and disables their exports after model creation,
-checkpoint loading, or training. It also clears on errors because a failed action
+clears evaluation/prediction results and disables their exports after model creation
+or checkpoint loading; streamed training applies the same resets through
+`training_control.bind_training`. It also clears on errors because a failed action
 can discard the old model or update some weights before reporting failure. These
 wrappers append UI outputs while preserving direct handler APIs; avoid assuming
 the original model/history states are the final outputs of the wrapped callback.
@@ -162,7 +163,17 @@ Two pieces of state are bound to a specific model object and go stale if it is r
 
 `on_train` appends the train and validation loss together and bumps `trained_epochs` only
 after a full epoch, so a failure part-way through leaves the loss lists and the counter in
-agreement. It catches its own exceptions and still returns a plot of the completed epochs.
+agreement. `training_utils.training_handler` retains the direct six-value return API;
+its `.stream` generator yields the initial state and a fresh plot/history snapshot
+after each completed epoch, including a terminal update on errors or stops.
+`training_control.bind_training` publishes those updates and invalidates old evaluation
+and prediction results immediately. It keeps the tab's concurrency lock throughout
+the stream. A session-local `TrainingControl` is shared with the **Stop training**
+callback, which bypasses the queue and signals cooperative stopping between batches.
+Do not use Gradio cancellation to interrupt training: that can discard unpublished
+epoch state while weights have already changed. Stopping retains weights and optimizer
+updates from an incomplete epoch, but excludes that epoch from history, scheduler steps,
+and the completed count. Loader iterators must release workers on interruption.
 
 All four GNN tabs expose **Release current run**, which clears processed data/loaders,
 models, transformers, histories, similarity and results under the tab's concurrency
